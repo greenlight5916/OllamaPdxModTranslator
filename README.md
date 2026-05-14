@@ -21,6 +21,8 @@ Paradox 게임 MOD의 YML 언어 파일을 로컬 Ollama LLM으로 번역하는 
 4. Input Folder(원본 YML 폴더), Output Folder(출력 폴더) 지정
 5. Start Translation 클릭
 
+> ⚠️ 이 프로그램은 AI(GitHub Copilot / Claude)의 도움을 받아 제작되었습니다.
+
 ## 요구사항
 
 - [Ollama](https://ollama.ai) 로컬 서버 실행 중
