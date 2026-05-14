@@ -1,0 +1,9 @@
+0.1/
+__pycache__/
+*.spec
+build/
+dist/
+*.exe
+*.log
+rog/
+untranslated/
