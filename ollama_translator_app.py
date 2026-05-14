@@ -64,9 +64,18 @@ class OllamaTranslator:
         self.prompt_template = None
         self.retry_untranslated = False
         self.max_retries = 3
+        self._consecutive_errors = 0
 
     def set_base_url(self, url):
         self.base_url = url.rstrip("/")
+
+    def _check_fatal(self):
+        self._consecutive_errors += 1
+        if self._consecutive_errors >= self.max_retries + 2:
+            self.log_callback("[FATAL] Consecutive LLM failures - stopping translation")
+            self.stop_event.set()
+            return True
+        return False
 
     def _call_ollama(self, model, prompt, temperature=0.5, max_tokens=4096):
         try:
@@ -75,16 +84,26 @@ class OllamaTranslator:
                 "messages": [{"role": "user", "content": prompt}],
                 "options": {"temperature": temperature, "num_predict": max_tokens},
                 "stream": False
-            }, timeout=120)
+            }, timeout=60)
             resp.raise_for_status()
+            self._consecutive_errors = 0
             return resp.json().get("message", {}).get("content", "")
         except requests.exceptions.ConnectionError:
+            self._check_fatal()
             return "[OLLAMA_CONNECTION_ERROR]"
+        except requests.exceptions.Timeout:
+            self.log_callback("[TIMEOUT] LLM request timed out")
+            if self._check_fatal():
+                return "[OLLAMA_FATAL]"
+            return "[OLLAMA_TIMEOUT]"
         except Exception as e:
+            self._check_fatal()
             return f"[OLLAMA_ERROR: {e}]"
 
     def _save_checkpoint(self, result_lines, output_path):
-        cp_path = os.path.join(os.path.dirname(CONFIG_FILE), os.path.basename(output_path))
+        cp_dir = os.path.join(os.path.dirname(CONFIG_FILE), "checkpoint")
+        os.makedirs(cp_dir, exist_ok=True)
+        cp_path = os.path.join(cp_dir, os.path.basename(output_path))
         try:
             with codecs.open(cp_path, "w", encoding="utf-8-sig") as f:
                 f.writelines(result_lines)
@@ -249,7 +268,7 @@ class OllamaTranslator:
         with codecs.open(output_path, "w", encoding="utf-8-sig") as f:
             f.writelines(result)
         self.log_callback(f"  Saved: {output_path}")
-        cp_path = os.path.join(os.path.dirname(CONFIG_FILE), os.path.basename(output_path))
+        cp_path = os.path.join(os.path.dirname(CONFIG_FILE), "checkpoint", os.path.basename(output_path))
         if os.path.exists(cp_path):
             try:
                 os.remove(cp_path)
@@ -914,11 +933,12 @@ class OllamaTranslatorGUI(ctk.CTk):
         self.progress_text.configure(text="0 / 0 lines")
 
         # 체크포인트 자동 복구
-        if self.output_dir.get():
-            for fn in os.listdir(os.path.dirname(CONFIG_FILE)):
+        cp_dir = os.path.join(os.path.dirname(CONFIG_FILE), "checkpoint")
+        if os.path.isdir(cp_dir):
+            for fn in os.listdir(cp_dir):
                 if not fn.endswith((".yml", ".yaml")):
                     continue
-                cp = os.path.join(os.path.dirname(CONFIG_FILE), fn)
+                cp = os.path.join(cp_dir, fn)
                 if not os.path.isfile(cp):
                     continue
                 for root, _, fnames in os.walk(self.output_dir.get()):
