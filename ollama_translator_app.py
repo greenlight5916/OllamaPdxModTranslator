@@ -370,7 +370,9 @@ class OllamaTranslator:
         source_code = _codes.get(source_lang, source_lang.lower())
         target_code = _codes.get(target_lang, target_lang.lower())
         files = []
-        for root, _, fnames in os.walk(input_dir):
+        for root, dirs, fnames in os.walk(input_dir):
+            if root[len(input_dir):].count(os.sep) >= 1:
+                dirs[:] = []
             for fn in fnames:
                 if f"l_{source_code}" in fn.lower() and fn.lower().endswith((".yml", ".yaml")):
                     files.append(os.path.join(root, fn))
@@ -841,9 +843,11 @@ class OllamaTranslatorGUI(ctk.CTk):
             f.grid(row=row, column=col, sticky="ew", padx=(0, 10) if col == 1 else (0, 5), pady=3)
             f.grid_columnconfigure(0, weight=1)
             if combo_vals:
-                ctk.CTkComboBox(f, variable=var, values=combo_vals, state="readonly").grid(row=0, column=0, sticky="ew")
+                w = ctk.CTkComboBox(f, variable=var, values=combo_vals, state="readonly")
+                w.grid(row=0, column=0, sticky="ew")
             else:
-                ctk.CTkEntry(f, textvariable=var).grid(row=0, column=0, sticky="ew")
+                w = ctk.CTkEntry(f, textvariable=var)
+                w.grid(row=0, column=0, sticky="ew")
             bc = 2
             if browse:
                 ctk.CTkButton(f, text="Browse", width=70, command=browse).grid(row=0, column=bc, padx=(5, 0))
@@ -852,6 +856,7 @@ class OllamaTranslatorGUI(ctk.CTk):
                 for lbl, cmd in extra_btns:
                     ctk.CTkButton(f, text=lbl, width=70, command=cmd).grid(row=0, column=bc, padx=(5, 0))
                     bc += 1
+            return w
 
         def _lb(row, col, text):
             ctk.CTkLabel(sf, text=text, anchor="w").grid(row=row, column=col, sticky="w", padx=5, pady=3)
@@ -868,7 +873,7 @@ class OllamaTranslatorGUI(ctk.CTk):
         _lb(2, 0, "Target:")
         _put(2, 1, self.target_lang, combo_vals=self.available_langs)
         _lb(2, 2, "Output Folder:")
-        _put(2, 3, self.output_dir, browse=self._browse_output)
+        self.output_entry = _put(2, 3, self.output_dir, browse=self._browse_output)
         ctk.CTkLabel(sf, text="Game Preset:", anchor="w").grid(row=3, column=0, sticky="w", padx=5, pady=3)
         gf = ctk.CTkFrame(sf, fg_color="transparent")
         gf.grid(row=3, column=1, sticky="ew", padx=(0, 10), pady=3)
@@ -1064,7 +1069,9 @@ class OllamaTranslatorGUI(ctk.CTk):
         src_code = {"English":"english","Korean":"korean","Simplified Chinese":"simp_chinese","French":"french","German":"german","Spanish":"spanish","Japanese":"japanese","Russian":"russian","Polish":"polish","Brazilian Portuguese":"braz_por"}.get(src, src.lower())
         tgt_code = {"English":"korean","Korean":"korean","Simplified Chinese":"simp_chinese","French":"french","German":"german","Spanish":"spanish","Japanese":"japanese","Russian":"russian","Polish":"polish","Brazilian Portuguese":"braz_por"}.get(tgt, tgt.lower())
         self._validate_file_pairs = []
-        for root, _, fnames in os.walk(inp):
+        for root, dirs, fnames in os.walk(inp):
+            if root[len(inp):].count(os.sep) >= 1:
+                dirs[:] = []
             for fn in fnames:
                 if f"l_{src_code}" not in fn or not fn.endswith((".yml", ".yaml")):
                     continue
@@ -1073,6 +1080,8 @@ class OllamaTranslatorGUI(ctk.CTk):
                 rel = os.path.relpath(root, inp)
                 out_fn = re.sub(r'_?l_[a-z]+_?', f'_l_{tgt_code}', fn, flags=re.IGNORECASE)
                 out_path = os.path.join(out, out_fn) if rel == "." else os.path.join(out, rel, out_fn)
+                if not os.path.exists(out_path):
+                    continue
                 self._validate_file_pairs.append({"base": base, "in": in_path, "out": out_path, "issues": 0, "severity": None})
         if not self._validate_file_pairs:
             self._validate_msg.configure(text="No matching file pairs found", text_color="red")
@@ -1788,17 +1797,39 @@ class OllamaTranslatorGUI(ctk.CTk):
     def _browse_input(self):
         d = filedialog.askdirectory()
         if d:
+            _codes = {"English":"english","Korean":"korean","Simplified Chinese":"simp_chinese",
+                      "French":"french","German":"german","Spanish":"spanish",
+                      "Japanese":"japanese","Russian":"russian","Polish":"polish",
+                      "Brazilian Portuguese":"braz_por"}
+            src_code = _codes.get(self.source_lang.get(), "").lower()
+            tgt_code = _codes.get(self.target_lang.get(), "").lower()
             for sub in ("localisation", "localization"):
                 p = os.path.join(d, sub)
                 if os.path.isdir(p):
                     d = p
                     break
+            sf = os.path.join(d, src_code)
+            if os.path.isdir(sf):
+                d = sf
             self.input_dir.set(d)
+            parent = os.path.dirname(d)
+            folder = os.path.basename(d)
+            if folder.lower() == src_code and src_code:
+                tgt_path = os.path.join(parent, tgt_code)
+                os.makedirs(tgt_path, exist_ok=True)
+                self.output_dir.set(tgt_path)
+            else:
+                self.output_dir.set(d)
+            if hasattr(self, 'output_entry'):
+                self.output_entry.configure(text_color="#888888")
+            self._save_config()
 
     def _browse_output(self):
         d = filedialog.askdirectory()
         if d:
             self.output_dir.set(d)
+            if hasattr(self, 'output_entry'):
+                self.output_entry.configure(text_color="white")
 
     def _log_dir(self):
         d = os.path.join(os.path.dirname(self._config_path()), "rog")
