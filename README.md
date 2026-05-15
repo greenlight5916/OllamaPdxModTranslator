@@ -1,18 +1,6 @@
 # Ollama Paradox Mod Translator
 
-Paradox 게임 MOD의 YML 언어 파일을 로컬 Ollama LLM으로 번역하는 도구 (v0.13)
-
-## 주요 기능
-
-- **YML 파일 번역** — CK3, HOI4, Stellaris, EU4, Vic3, Imperator 등 게임 MOD 언어 파일 일괄 번역
-- **게임별 번역 톤** — 각 게임 장르에 맞는 문체 자동 적용
-- **게임코드 보호** — `$변수$`, `[스크립트]`, `§X` 색상코드, `£아이콘£`을 Placeholder 치환하여 LLM이 건드리지 못하게 보호
-- **구조 보존** — YAML 키/값 구조를 코드에서 직접 관리, LLM은 순수 텍스트 값만 번역
-- **Live Output** — 번역 진행 중 원문과 번역문 실시간 비교
-- **Validate** — 번역 완료 후 미번역/외국어 혼용/중복 키 검사
-- **체크포인트** — 번역 중단 시 자동 저장, 재시작 시 복구
-- **Debug Log** — 체크박스 활성화 시 LLM 입출력 데이터 상세 로깅
-- **로그 저장** — `rog/` 폴더에 자동 저장
+Paradox 게임 MOD의 YML 언어 파일을 로컬 Ollama LLM으로 번역하는 도구
 
 ## 사용법
 
