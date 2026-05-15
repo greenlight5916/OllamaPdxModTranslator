@@ -359,7 +359,6 @@ class OllamaTranslator:
             translated = self._translate_batch(batch, source_lang, target_lang, model, temperature, max_tokens, game)
             result.extend(translated)
             self.progress_callback(min(len(result), total), total)
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w", encoding="utf-8-sig") as f:
             f.writelines(result)
         self.log_callback(f"  Saved: {output_path}")
@@ -394,8 +393,13 @@ class OllamaTranslator:
             if self.stop_event.is_set():
                 return
             base = os.path.basename(fp)
+            rel = os.path.relpath(os.path.dirname(fp), input_dir)
             new_base = re.sub(f"l_{source_code}", f"l_{target_code}", base, flags=re.IGNORECASE)
-            out_path = os.path.join(output_dir, new_base)
+            if rel == ".":
+                out_path = os.path.join(output_dir, new_base)
+            else:
+                out_path = os.path.join(output_dir, rel, new_base)
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
             self.log_callback(f"  Processing: {os.path.basename(fp)}")
             self._process_file(fp, out_path, source_lang, target_lang, model, temperature, max_tokens, batch_size, game)
 
@@ -412,8 +416,9 @@ class OllamaTranslator:
             self.log_callback("All done!")
             for fp in files:
                 base = os.path.basename(fp)
+                rel = os.path.relpath(os.path.dirname(fp), input_dir)
                 new_base = re.sub(f"l_{source_code}", f"l_{target_code}", base, flags=re.IGNORECASE)
-                out_path = os.path.join(output_dir, new_base)
+                out_path = os.path.join(output_dir, new_base) if rel == "." else os.path.join(output_dir, rel, new_base)
                 if os.path.exists(out_path):
                     issues = self.check_quality(fp, out_path, source_lang, target_lang)
                     if issues:
@@ -588,6 +593,12 @@ class OllamaTranslatorGUI(ctk.CTk):
         self._g_per_page = 20
         self._m_page = 0
         self._m_per_page = 20
+        self._validate_file_pairs = []
+        self._validate_all_data = []
+        self._validate_modified = {}
+        self._validate_page = 0
+        self._validate_hide_filter = ctk.BooleanVar(value=False)
+        self._validate_per_page = ctk.IntVar(value=20)
         self.available_langs = ["English", "Korean", "Simplified Chinese", "French", "German",
                                 "Spanish", "Japanese", "Brazilian Portuguese", "Russian", "Polish"]
         self.engine = OllamaTranslator(
@@ -689,6 +700,30 @@ class OllamaTranslatorGUI(ctk.CTk):
     def _on_close(self):
         self._g_running = False
         self._m_running = False
+        if getattr(self, '_validate_modified', None):
+            dlg = ctk.CTkToplevel(self, fg_color="white")
+            dlg.title("Exit")
+            dlg.transient(self)
+            dlg.grab_set()
+            dlg.grid_columnconfigure(0, weight=1)
+            result = [None]
+            ctk.CTkLabel(dlg, text="Save changes before exiting?", font=ctk.CTkFont(size=13), text_color="black").grid(row=0, column=0, pady=(15,10))
+            bf = ctk.CTkFrame(dlg, fg_color="white")
+            bf.grid(row=1, column=0, pady=5)
+            for i, t in enumerate(["Save & Exit", "Exit", "Cancel"]):
+                ctk.CTkButton(bf, text=t, width=100, fg_color="#D32F2F" if i == 1 else "#2E7D32" if i == 0 else "#757575",
+                              text_color="white", hover_color="#E53935" if i == 1 else "#388E3C" if i == 0 else "#9E9E9E",
+                              command=lambda v=i: [result.__setitem__(0, [True, False, None][v]), dlg.destroy()]).pack(side="left", padx=5)
+            dlg.update_idletasks()
+            pw, ph = self.winfo_width(), self.winfo_height()
+            px, py = self.winfo_x(), self.winfo_y()
+            dw, dh = dlg.winfo_width(), dlg.winfo_height()
+            dlg.geometry(f"+{px + (pw - dw)//2}+{py + (ph - dh)//2}")
+            dlg.wait_window()
+            if result[0] is None:
+                return
+            if result[0]:
+                self._validate_save()
         self.engine.kill_server()
         self._save_config()
         self.destroy()
@@ -697,12 +732,15 @@ class OllamaTranslatorGUI(ctk.CTk):
         ok = all([self.ollama_url.get(), self.ollama_model.get(),
                   self.input_dir.get(), self.output_dir.get(),
                   self.source_lang.get(), self.target_lang.get()])
-        self.start_btn.configure(state="normal" if (ok and self._connected) else "disabled")
+        st = "normal" if (ok and self._connected) else "disabled"
+        self.start_btn.configure(state=st)
+        if hasattr(self, '_validate_retry_btn'):
+            self._validate_retry_btn.configure(state=st)
 
     def _default_prompt(self):
         return ("Translate the following text from '{source_lang}' to '{target_lang}'.\n"
                 "Rules:\n1. Preserve all {{PH0}}, {{PH1}}, etc. placeholders exactly as-is.\n"
-                "2. Preserve line markers like {{PH0}} {{PH1}} exactly as-is.\n"
+                "2. Preserve line markers like \u27e80\u27e9 \u27e81\u27e9 exactly as-is.\n"
                 "3. Do NOT wrap in code blocks or add explanations.\n\n{batch_text}")
 
     # ── UI Build ──
@@ -716,6 +754,49 @@ class OllamaTranslatorGUI(ctk.CTk):
         t_val = self.tabview.add("Validate")
         self.tabview.set("Translate")
         t_trans.grid_columnconfigure(0, weight=1)
+        t_val.grid_columnconfigure(0, weight=1)
+        t_val.grid_rowconfigure(2, weight=1)
+        topf = ctk.CTkFrame(t_val)
+        topf.grid(row=0, column=0, padx=10, pady=5, sticky="ew")
+        topf.grid_columnconfigure(1, weight=1)
+        self._validate_combo = ctk.CTkComboBox(topf, values=["(no files)"], state="readonly", command=self._validate_load_file)
+        self._validate_combo.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        self._validate_msg = ctk.CTkLabel(topf, text="", font=ctk.CTkFont(size=12))
+        self._validate_msg.grid(row=0, column=1, padx=5, pady=5, sticky="w")
+        ctk.CTkButton(topf, text="Load Files", command=self._validate_load_files, width=90).grid(row=0, column=2, padx=5)
+        cf = ctk.CTkFrame(t_val)
+        cf.grid(row=1, column=0, padx=10, pady=2, sticky="ew")
+        ctk.CTkCheckBox(cf, text="Show headers/comments/blanks", variable=self._validate_hide_filter,
+                        font=ctk.CTkFont(size=12), command=self._validate_render).pack(side="left", padx=5)
+        ctk.CTkLabel(cf, text="Lines/page:", font=ctk.CTkFont(size=11)).pack(side="right", padx=(5,2))
+        self._validate_per_page_entry = ctk.CTkEntry(cf, textvariable=self._validate_per_page, width=50)
+        self._validate_per_page_entry.pack(side="right")
+        def _on_page_size_change(*a):
+            val = self._validate_per_page.get()
+            if val < 1:
+                self._validate_per_page.set(1)
+            self._validate_page = 0
+            self._validate_render()
+        self._validate_per_page.trace_add("write", _on_page_size_change)
+        self._validate_frame = ctk.CTkScrollableFrame(t_val)
+        self._validate_frame.grid(row=2, column=0, padx=5, pady=2, sticky="nsew")
+        self._validate_frame.grid_columnconfigure(0, weight=1)
+        pgf = ctk.CTkFrame(t_val)
+        pgf.grid(row=3, column=0, padx=10, pady=(0,0), sticky="ew")
+        self._validate_prev_btn = ctk.CTkButton(pgf, text="◀ Prev", width=60, command=self._validate_prev_page)
+        self._validate_prev_btn.pack(side="left", padx=2)
+        self._validate_page_label = ctk.CTkLabel(pgf, text="1/1", font=ctk.CTkFont(size=12))
+        self._validate_page_label.pack(side="left", padx=5)
+        self._validate_next_btn = ctk.CTkButton(pgf, text="Next ▶", width=60, command=self._validate_next_page)
+        self._validate_next_btn.pack(side="left", padx=2)
+        self._validate_info = ctk.CTkLabel(pgf, text="", font=ctk.CTkFont(size=12))
+        self._validate_info.pack(side="right", padx=5)
+        bf = ctk.CTkFrame(t_val)
+        bf.grid(row=4, column=0, padx=10, pady=5, sticky="ew")
+        self._validate_retry_btn = ctk.CTkButton(bf, text="Retry Selected", fg_color="#E65100", command=self._validate_retry_selected, state="disabled")
+        self._validate_retry_btn.pack(side="left", padx=5)
+        self._validate_save_btn = ctk.CTkButton(bf, text="Save Changes", command=self._validate_save)
+        self._validate_save_btn.pack(side="left", padx=5)
         t_trans.grid_rowconfigure(7, weight=1)
         pf = ctk.CTkFrame(t_trans)
         pf.grid(row=5, column=0, padx=10, pady=0, sticky="ew")
@@ -833,14 +914,6 @@ class OllamaTranslatorGUI(ctk.CTk):
         self.live_btn.pack(side="left", padx=5)
         self.status_label = ctk.CTkLabel(cf, text="Ready", text_color="gray")
         self.status_label.pack(side="right", padx=10)
-        t_val.grid_columnconfigure(0, weight=1)
-        t_val.grid_rowconfigure(2, weight=1)
-        ctk.CTkButton(t_val, text="Scan Output Files", command=self._run_validate,
-                      fg_color="#1565C0").grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        self.val_status = ctk.CTkLabel(t_val, text="", font=ctk.CTkFont(size=11))
-        self.val_status.grid(row=1, column=0, padx=10, pady=2, sticky="w")
-        self.val_text = ctk.CTkTextbox(t_val, wrap="word", font=ctk.CTkFont(size=11))
-        self.val_text.grid(row=2, column=0, padx=10, pady=5, sticky="nsew")
         t_gl = self.tabview.add("Glossary")
         t_gl.grid_columnconfigure(0, weight=1)
         t_gl.grid_rowconfigure(0, weight=1)
@@ -980,48 +1053,367 @@ class OllamaTranslatorGUI(ctk.CTk):
 
     # ── Validate Tab ──
 
-    def _run_validate(self):
+    def _validate_load_files(self):
         inp = self.input_dir.get()
         out = self.output_dir.get()
-        if not inp or not out:
-            self.val_status.configure(text="Set Input and Output folders first")
+        src = self.source_lang.get()
+        tgt = self.target_lang.get()
+        if not inp or not out or not src or not tgt:
+            self._validate_msg.configure(text="Set Input/Output folders and languages in Translate tab first", text_color="red")
+            return
+        src_code = {"English":"english","Korean":"korean","Simplified Chinese":"simp_chinese","French":"french","German":"german","Spanish":"spanish","Japanese":"japanese","Russian":"russian","Polish":"polish","Brazilian Portuguese":"braz_por"}.get(src, src.lower())
+        tgt_code = {"English":"korean","Korean":"korean","Simplified Chinese":"simp_chinese","French":"french","German":"german","Spanish":"spanish","Japanese":"japanese","Russian":"russian","Polish":"polish","Brazilian Portuguese":"braz_por"}.get(tgt, tgt.lower())
+        self._validate_file_pairs = []
+        for root, _, fnames in os.walk(inp):
+            for fn in fnames:
+                if f"l_{src_code}" not in fn or not fn.endswith((".yml", ".yaml")):
+                    continue
+                base = re.sub(r'_?l_[a-z]+_?', '', fn).replace(".yml", "").replace(".yaml", "")
+                in_path = os.path.join(root, fn)
+                rel = os.path.relpath(root, inp)
+                out_fn = re.sub(r'_?l_[a-z]+_?', f'_l_{tgt_code}', fn, flags=re.IGNORECASE)
+                out_path = os.path.join(out, out_fn) if rel == "." else os.path.join(out, rel, out_fn)
+                self._validate_file_pairs.append({"base": base, "in": in_path, "out": out_path, "issues": 0, "severity": None})
+        if not self._validate_file_pairs:
+            self._validate_msg.configure(text="No matching file pairs found", text_color="red")
+            return
+        self._validate_file_pairs.sort(key=lambda x: (0 if x["severity"] else 1, x["base"]))
+        vals = []
+        for fp in self._validate_file_pairs:
+            prefix = "⚠ " if fp["severity"] == "warn" else "✗ " if fp["severity"] == "error" else ""
+            vals.append(f"{prefix}{fp['base']}")
+        self._validate_combo.configure(values=vals)
+        self._validate_combo.set(vals[0])
+        self._validate_msg.configure(text=f"{len(self._validate_file_pairs)} files", text_color="gray")
+        self._validate_load_file(vals[0].replace("⚠ ", "").replace("✗ ", ""))
+
+    def _validate_load_file(self, base_name):
+        base_name = base_name.replace("⚠ ", "").replace("✗ ", "")
+        fp = next((f for f in self._validate_file_pairs if f["base"] == base_name), None)
+        if not fp:
             return
         src = self.source_lang.get()
         tgt = self.target_lang.get()
-        if not src or not tgt:
-            self.val_status.configure(text="Set Source and Target languages first")
-            return
-        self.val_text.delete("1.0", "end")
-        total_issues = 0
-        matched = 0
-        for root, _, fnames in os.walk(out):
-            for fn in fnames:
-                if not fn.endswith((".yml", ".yaml")):
-                    continue
-                out_path = os.path.join(root, fn)
-                rel = os.path.relpath(root, out)
-                src_code = {"English":"english","Korean":"korean","Simplified Chinese":"simp_chinese","French":"french","German":"german","Spanish":"spanish","Japanese":"japanese","Russian":"russian","Polish":"polish","Brazilian Portuguese":"braz_por"}.get(src, src.lower())
-                in_path = os.path.join(inp, rel, re.sub(r'_?l_[a-z]+_', f'_l_{src_code}_', fn, flags=re.IGNORECASE))
-                if not os.path.exists(in_path):
-                    continue
-                matched += 1
-                issues = self.engine.check_quality(in_path, out_path, src, tgt)
-                if not issues:
-                    continue
-                total_issues += len(issues)
-                self.val_text.insert("end", f"\n--- {fn} ({len(issues)} issues) ---\n")
-                for line_num, orig, trans, typ, dup in issues:
-                    tag = {"UNTRANSLATED": "!", "FOREIGN": "?", "DUPLICATE": "D", "MISMATCH": "X"}.get(typ, "?")
-                    self.val_text.insert("end", f"  [{tag}] L{line_num}\n")
-                    self.val_text.insert("end", f"       o {orig}\n")
-                    self.val_text.insert("end", f"       -> {trans}\n")
-                    if dup:
-                        self.val_text.insert("end", f"       ! {dup}\n")
-                self.val_text.see("end")
-        if matched == 0:
-            self.val_status.configure(text="No matching input/output file pairs found")
+        issues = self.engine.check_quality(fp["in"], fp["out"], src, tgt)
+        with open(fp["in"], "r", encoding="utf-8-sig") as f:
+            src_lines = [l.rstrip("\n") for l in f.readlines()]
+        with open(fp["out"], "r", encoding="utf-8-sig") as f:
+            tgt_lines = [l.rstrip("\n") for l in f.readlines()]
+        self._validate_all_data = []
+        has_issues = False
+        sev = None
+        for i in range(max(len(src_lines), len(tgt_lines))):
+            s = src_lines[i] if i < len(src_lines) else ""
+            t = tgt_lines[i] if i < len(tgt_lines) else ""
+            key = re.match(r"^\s*([\w.]+):\s*", s)
+            key_text = key.group(1) if key else ""
+            src_val = re.sub(r"^\s*[\w.]+:\s*", "", s).strip('" ')
+            tgt_val = re.sub(r"^\s*[\w.]+:\s*", "", t).strip('" ')
+            status = "H" if key_text.startswith("l_") else "-" if (not s.strip() or s.strip().startswith("#")) else "✓"
+            for iss in issues:
+                if iss[0] == i:
+                    status = {"UNTRANSLATED": "✗!", "FOREIGN": "✗?", "DUPLICATE": "✗D", "MISMATCH": "✗X"}.get(iss[3], "✗")
+                    if iss[3] in ("UNTRANSLATED", "FOREIGN"): sev = "warn"
+                    elif iss[3] == "MISMATCH": sev = "error"
+                    has_issues = True
+                    break
+            self._validate_all_data.append({"key": key_text, "src": src_val, "tgt": tgt_val, "status": status, "ln": i, "checked": False, "_idx": len(self._validate_all_data)})
+        fp["issues"] = sum(1 for d in self._validate_all_data if d["status"].startswith("✗"))
+        fp["severity"] = sev
+        self._validate_page = 0
+        self._validate_render()
+        self._validate_update_file_list()
+
+    def _validate_update_file_list(self):
+        vals = []
+        for fp in self._validate_file_pairs:
+            prefix = "⚠ " if fp["severity"] == "warn" else "✗ " if fp["severity"] == "error" else ""
+            vals.append(f"{prefix}{fp['base']}")
+        self._validate_combo.configure(values=vals)
+        current = self._validate_combo.get()
+        clean = current.replace("⚠ ", "").replace("✗ ", "")
+        match = next((v for v in vals if v.endswith(clean)), vals[0] if vals else "")
+        self._validate_combo.set(match)
+
+    def _validate_render(self):
+        for w in self._validate_frame.winfo_children():
+            w.destroy()
+        data = self._validate_all_data
+        if not self._validate_hide_filter.get():
+            data = [d for d in data if d["status"] not in ("H", "-")]
+        total = len(data)
+        per_page = self._validate_per_page.get()
+        if per_page < 1:
+            per_page = 1
+        pages = max(1, (total - 1) // per_page + 1)
+        if self._validate_page >= pages:
+            self._validate_page = pages - 1
+        start = self._validate_page * per_page
+        page = data[start:start + per_page]
+        WT = [3, 4, 4]
+        FIXED = [40, 32, 30]
+        ROW_H = 28
+        LABELS = ["KEY", "Source", "Target", "Sts", "Ln", "☐"]
+        for ci in range(6):
+            if ci < 3:
+                self._validate_frame.grid_columnconfigure(ci, weight=WT[ci], minsize=80)
+            else:
+                self._validate_frame.grid_columnconfigure(ci, weight=0, minsize=FIXED[ci-3])
+        self._validate_frame.grid_columnconfigure(6, weight=0)
+        page_chks = []
+        for ci, txt in enumerate(LABELS):
+            if ci < 5:
+                kwargs = {"anchor": "w", "font": ctk.CTkFont(size=11, weight="bold")}
+                if ci >= 3:
+                    kwargs["width"] = FIXED[ci-3]
+                ctk.CTkLabel(self._validate_frame, text=txt, **kwargs).grid(row=0, column=ci, sticky="w", pady=(2,0))
+            else:
+                hdr_chk = ctk.CTkCheckBox(self._validate_frame, text="", width=FIXED[2],
+                    command=lambda: self._validate_toggle_all(page_chks, hdr_chk))
+                hdr_chk.grid(row=0, column=5)
+        ctk.CTkFrame(self._validate_frame, height=1, fg_color="#444444").grid(row=1, column=0, columnspan=6, sticky="ew")
+        for ri, row in enumerate(page):
+            r = ri + 2
+            self._validate_frame.grid_rowconfigure(r, minsize=ROW_H)
+            kl = ctk.CTkLabel(self._validate_frame, text=row["key"], anchor="w", font=ctk.CTkFont(size=11))
+            kl.grid(row=r, column=0, sticky="ew", padx=(4,1))
+            kl.bind("<Double-Button-1>", lambda e, idx=row["_idx"]: self._validate_open_editor(idx))
+            sl = ctk.CTkEntry(self._validate_frame, font=ctk.CTkFont(size=11), state="disabled")
+            sl.grid(row=r, column=1, sticky="ew", padx=(4,1))
+            sl.configure(state="normal")
+            sl.insert(0, row["src"])
+            sl.configure(state="disabled")
+            sl.bind("<Double-Button-1>", lambda e, idx=row["_idx"]: self._validate_open_editor(idx))
+            tgt_entry = ctk.CTkEntry(self._validate_frame, font=ctk.CTkFont(size=11))
+            tgt_entry.grid(row=r, column=2, sticky="ew", padx=(4,1))
+            tgt_entry.insert(0, row["tgt"])
+            def _on_edit(e, idx=row["_idx"]):
+                new_val = e.widget.get()
+                ln = self._validate_all_data[idx]["ln"]
+                self._validate_modified[ln] = new_val
+                self._validate_save_btn.configure(text="Save Changes *")
+            tgt_entry.bind("<KeyRelease>", _on_edit)
+            tgt_entry.bind("<Double-Button-1>", lambda e, idx=row["_idx"]: self._validate_open_editor(idx))
+            sts = row["status"]
+            sts_color = "green" if sts == "✓" else "red" if sts.startswith("✗") else "gray"
+            ctk.CTkLabel(self._validate_frame, text=sts, width=FIXED[0], anchor="w", font=ctk.CTkFont(size=11), text_color=sts_color).grid(row=r, column=3, padx=(4,1))
+            ctk.CTkLabel(self._validate_frame, text=str(row["ln"]), width=FIXED[1], anchor="w", font=ctk.CTkFont(size=11)).grid(row=r, column=4)
+            chk = ctk.CTkCheckBox(self._validate_frame, text="", width=FIXED[2], command=lambda idx=row["_idx"]: self._validate_toggle(idx))
+            chk.grid(row=r, column=5)
+            if sts.startswith("✗"):
+                chk.select()
+            page_chks.append(chk)
+        self._validate_page_label.configure(text=f"{self._validate_page+1}/{pages}")
+        self._validate_info.configure(text=f"{total}/{len(self._validate_all_data)} lines  |  ✓ {sum(1 for d in self._validate_all_data if d['status']=='✓')}  ✗ {sum(1 for d in self._validate_all_data if d['status'].startswith('✗'))}")
+
+    def _validate_prev_page(self):
+        if self._validate_page > 0:
+            self._validate_page -= 1
+            self._validate_render()
+
+    def _validate_next_page(self):
+        data = self._validate_all_data
+        if self._validate_hide_filter.get():
+            data = data
         else:
-            self.val_status.configure(text=f"Scanned {matched} file(s), found {total_issues} issue(s)")
+            data = [d for d in data if d["status"] not in ("H", "-")]
+        total = len(data)
+        per_page = self._validate_per_page.get()
+        if per_page < 1:
+            per_page = 1
+        pages = max(1, (total - 1) // per_page + 1)
+        if self._validate_page < pages - 1:
+            self._validate_page += 1
+            self._validate_render()
+
+    def _validate_toggle_all(self, chks, hdr):
+        sel = hdr.get()
+        for c in chks:
+            c.select() if sel else c.deselect()
+
+    def _validate_open_editor(self, data_idx):
+        filtered = [d for d in self._validate_all_data if d["status"] not in ("H", "-")] if not self._validate_hide_filter.get() else self._validate_all_data
+        if not filtered:
+            return
+        start_idx = next((i for i, d in enumerate(filtered) if d is self._validate_all_data[data_idx]), 0)
+        popup = ctk.CTkToplevel(self)
+        popup.title(f"Line Editor")
+        popup.geometry("800x500")
+        popup.grid_columnconfigure(0, weight=1)
+        popup.grid_rowconfigure(1, weight=1)
+        popup.transient(self)
+
+        current = [start_idx]
+
+        def get_row():
+            return filtered[current[0]]
+
+        def refresh_header():
+            row = get_row()
+            popup.title(f"Line {row['ln']}  |  {row['key']}")
+            status_label.configure(text=f"Status: {row['status']}")
+            page_label.configure(text=f"{current[0]+1}/{len(filtered)}")
+
+        def save_current():
+            row = get_row()
+            val = target_textbox.get("1.0", "end-1c").strip()
+            row["tgt"] = val
+            self._validate_modified[row["ln"]] = val
+            self._validate_save_btn.configure(text="Save Changes *")
+
+        def load_current():
+            row = get_row()
+            src_textbox.configure(state="normal")
+            src_textbox.delete("1.0", "end")
+            src_textbox.insert("1.0", row["src"])
+            src_textbox.configure(state="disabled")
+            target_textbox.delete("1.0", "end")
+            target_textbox.insert("1.0", row["tgt"])
+            refresh_header()
+
+        def nav(delta):
+            new_idx = current[0] + delta
+            if 0 <= new_idx < len(filtered):
+                save_current()
+                current[0] = new_idx
+                load_current()
+
+        def retry_line():
+            row = get_row()
+            raw_val = row["src"]
+            phs = []
+            phc = [0]
+            def _ph(t):
+                ph = f"{{PH{phc[0]}}}"; phc[0] += 1; phs.append((ph, t)); return ph
+            cleaned = re.sub(r'\$[^$]+\$', lambda m: _ph(m.group(0)), raw_val)
+            cleaned = re.sub(r'\[[^\]]*\]', lambda m: _ph(m.group(0)), cleaned)
+            cleaned = re.sub(r'\u00a7.', lambda m: _ph(m.group(0)), cleaned)
+            result = self.engine._call_ollama(self.ollama_model.get(),
+                f"Translate from {self.source_lang.get()} to {self.target_lang.get()}. Preserve {{PH0}}, {{PH1}} exactly.\n{cleaned}",
+                temperature=0.1, max_tokens=500)
+            if result and not result.startswith("[OLLAMA_"):
+                for ph, orig in phs:
+                    result = result.replace(ph, orig)
+                result = result.strip().strip('"')
+                target_textbox.delete("1.0", "end")
+                target_textbox.insert("1.0", result)
+                row["tgt"] = result
+                row["status"] = "✓"
+                save_current()
+
+        def close():
+            save_current()
+            self._validate_render()
+            popup.destroy()
+
+        # Top bar: prev/next + page info + status + retry
+        topf = ctk.CTkFrame(popup)
+        topf.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
+        ctk.CTkButton(topf, text="◀ Prev", width=60, command=lambda: nav(-1)).pack(side="left", padx=2)
+        page_label = ctk.CTkLabel(topf, text="", font=ctk.CTkFont(size=12))
+        page_label.pack(side="left", padx=5)
+        ctk.CTkButton(topf, text="Next ▶", width=60, command=lambda: nav(1)).pack(side="left", padx=2)
+        status_label = ctk.CTkLabel(topf, text="", font=ctk.CTkFont(size=12))
+        status_label.pack(side="right", padx=10)
+
+        # Source / Target panels (50:50)
+        midf = ctk.CTkFrame(popup)
+        midf.grid(row=1, column=0, sticky="nsew", padx=10, pady=2)
+        midf.grid_columnconfigure(0, weight=1)
+        midf.grid_columnconfigure(1, weight=1)
+        midf.grid_rowconfigure(0, weight=1)
+
+        src_frame = ctk.CTkFrame(midf)
+        src_frame.grid(row=0, column=0, sticky="nsew", padx=2)
+        src_frame.grid_rowconfigure(1, weight=1)
+        src_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(src_frame, text="SOURCE", font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=0, sticky="w", padx=3, pady=2)
+        src_textbox = ctk.CTkTextbox(src_frame, wrap="word", font=ctk.CTkFont(size=12))
+        src_textbox.grid(row=1, column=0, sticky="nsew", padx=3, pady=2)
+
+        tgt_frame = ctk.CTkFrame(midf)
+        tgt_frame.grid(row=0, column=1, sticky="nsew", padx=2)
+        tgt_frame.grid_rowconfigure(1, weight=1)
+        tgt_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(tgt_frame, text="TARGET (editable)", font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=0, sticky="w", padx=3, pady=2)
+        target_textbox = ctk.CTkTextbox(tgt_frame, wrap="word", font=ctk.CTkFont(size=12))
+        target_textbox.grid(row=1, column=0, sticky="nsew", padx=3, pady=2)
+        target_textbox.bind("<KeyRelease>", lambda e: save_current())
+
+        # Bottom buttons
+        bf = ctk.CTkFrame(popup)
+        bf.grid(row=2, column=0, sticky="ew", padx=10, pady=5)
+        retry_btn = ctk.CTkButton(bf, text="Retry with LLM", fg_color="#E65100", command=retry_line,
+                                   state="normal" if self._connected else "disabled")
+        retry_btn.pack(side="left", padx=5)
+        ctk.CTkButton(bf, text="Close", command=close).pack(side="right", padx=5)
+
+        popup.bind("<Escape>", lambda e: close())
+        target_textbox.bind("<Escape>", lambda e: close())
+        popup.protocol("WM_DELETE_WINDOW", close)
+
+        load_current()
+
+    def _validate_toggle(self, idx):
+        pass
+
+    def _auto_load_validate(self):
+        self._validate_load_files()
+
+    def _validate_retry_selected(self):
+        checked = [d for d in self._validate_all_data if getattr(d, "_checked", False) or d["status"].startswith("✗")]
+        if not checked:
+            return
+        src = self.source_lang.get()
+        tgt = self.target_lang.get()
+        model = self.ollama_model.get()
+        for row in checked:
+            if row["status"] in ("✓", "H", "-"):
+                continue
+            line = row["key"] + ": " + row["src"]
+            raw_val = row["src"]
+            phs = []
+            phc = [0]
+            def _ph(t):
+                ph = f"{{PH{phc[0]}}}"; phc[0] += 1; phs.append((ph, t)); return ph
+            cleaned = re.sub(r'\$[^$]+\$', lambda m: _ph(m.group(0)), raw_val)
+            cleaned = re.sub(r'\[[^\]]*\]', lambda m: _ph(m.group(0)), cleaned)
+            cleaned = re.sub(r'\u00a7.', lambda m: _ph(m.group(0)), cleaned)
+            result = self.engine._call_ollama(model, f"Translate from {src} to {tgt}. Preserve {{PH0}}, {{PH1}} exactly.\n{cleaned}", temperature=0.1, max_tokens=500)
+            if result and not result.startswith("[OLLAMA_"):
+                for ph, orig in phs:
+                    result = result.replace(ph, orig)
+                result = result.strip().strip('"')
+                row["tgt"] = result
+                row["status"] = "✓"
+                idx = self._validate_all_data.index(row)
+                ln = row["ln"]
+                self._validate_modified[ln] = result
+                self._validate_save_btn.configure(text="Save Changes *")
+        self._validate_render()
+
+    def _validate_save(self):
+        if not self._validate_file_pairs or not self._validate_all_data:
+            return
+        fp = self._validate_file_pairs[0] if self._validate_file_pairs else None
+        if not fp:
+            return
+        try:
+            with open(fp["out"], "r", encoding="utf-8-sig") as f:
+                lines = f.readlines()
+            for ln, new_val in self._validate_modified.items():
+                if ln < len(lines):
+                    key = self._validate_all_data[ln]["key"]
+                    ws = re.match(r"^(\s*)", lines[ln]).group(1) if ln < len(lines) else ""
+                    new_line = f'{ws}{key}: "{new_val}"\n'
+                    if re.match(r'^\s*[\w.]+:\s*"[^"]*"', lines[ln]):
+                        lines[ln] = new_line
+            with open(fp["out"], "w", encoding="utf-8-sig") as f:
+                f.writelines(lines)
+            self._validate_modified.clear()
+            self._validate_save_btn.configure(text="Save Changes")
+        except Exception as e:
+            self.log(f"[ERROR] Save failed: {e}")
 
     # ── Glossary helpers ──
 
@@ -1196,9 +1588,6 @@ class OllamaTranslatorGUI(ctk.CTk):
             self._g_running = False
         threading.Thread(target=_run, daemon=True).start()
 
-    def _g_entries_update(self, entries, pair_count):
-        pass
-
     def _game_update_display(self, filter_text=""):
         for w in self._g_result_frame.winfo_children():
             w.destroy()
@@ -1293,9 +1682,6 @@ class OllamaTranslatorGUI(ctk.CTk):
             self._m_running = False
         threading.Thread(target=_run, daemon=True).start()
 
-    def _m_entries_update(self, entries):
-        pass
-
     def _mod_translate(self):
         if getattr(self, '_m_llm_running', False):
             return
@@ -1352,9 +1738,6 @@ class OllamaTranslatorGUI(ctk.CTk):
                 e.insert(0, trans)
         self._m_page_label.configure(text=f"Page {self._m_page+1}/{(total-1)//self._m_per_page+1 if total > 0 else 1} ({total} terms)")
 
-    def _mod_update_retry_btn(self):
-        pass
-
     def _mod_retry_selected(self):
         pass
 
@@ -1405,6 +1788,11 @@ class OllamaTranslatorGUI(ctk.CTk):
     def _browse_input(self):
         d = filedialog.askdirectory()
         if d:
+            for sub in ("localisation", "localization"):
+                p = os.path.join(d, sub)
+                if os.path.isdir(p):
+                    d = p
+                    break
             self.input_dir.set(d)
 
     def _browse_output(self):
@@ -1594,6 +1982,7 @@ class OllamaTranslatorGUI(ctk.CTk):
         self.stop_btn.configure(state="disabled")
         self.reset_btn.configure(state="normal")
         self.log("[DONE] Translation complete")
+        self._auto_load_validate()
 
     def _stop(self):
         self.log("[STOP] Stopping translation...")
