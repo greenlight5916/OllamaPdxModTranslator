@@ -1,0 +1,8 @@
+Translate the following text from '{source_lang}' to '{target_lang}'.
+
+Rules:
+1. Preserve all {PH0}, {PH1}, etc. placeholders exactly as-is.
+2. Preserve line markers like ⟨0⟩ ⟨1⟩ exactly as-is.
+3. Do NOT wrap in code blocks or add explanations.
+
+{batch_text}

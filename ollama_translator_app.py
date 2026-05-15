@@ -23,24 +23,17 @@ ctk.set_default_color_theme("green")
 # ============================================================
 GAME_PROMPTS = {
     "Crusader Kings 3": """You are translating text from the medieval grand strategy game 'Crusader Kings 3'.
-Use a majestic, epic tone appropriate for medieval nobility and court intrigue.
-CRITICAL: Elements enclosed in square brackets like [Concept|E], [Character.GetFirstName] are game code - DO NOT translate or modify them.
-Maintain the medieval atmosphere while ensuring natural translation.""",
+Use a majestic, epic tone appropriate for medieval nobility and court intrigue.""",
     "Hearts of Iron 4": """You are translating text from the WWII grand strategy game 'Hearts of Iron 4'.
-Use a concise, military report style with professional terminology.
-CRITICAL: Symbols starting with \u00a3 (like \u00a3GFX_army_experience, \u00a3pol_power) are icon codes - NEVER translate them.
-Keep military terms precise and formal.""",
+Use a concise, military report style with professional terminology.""",
     "Stellaris": """You are translating text from the sci-fi grand strategy game 'Stellaris'.
-Use futuristic, scientific terminology and a tone suitable for space exploration and diplomacy.
-CRITICAL: Preserve all bracketed codes like [species.GetName] and variables like $PLANET_NAME$ exactly as they appear.""",
+Use futuristic, scientific terminology and a tone suitable for space exploration and diplomacy.""",
     "Europa Universalis IV": """You are translating text from the historical grand strategy game 'Europa Universalis IV' (1444-1821 period).
-Use formal diplomatic language appropriate for the Early Modern period.
-CRITICAL: Preserve all game codes in brackets [] and variables with $ symbols.""",
+Use formal diplomatic language appropriate for the Early Modern period.""",
     "Victoria 3": """You are translating text from the industrial era grand strategy game 'Victoria 3' (19th century).
 Use terminology appropriate for the Industrial Revolution era, including political movements, economic systems, and social reforms.""",
     "Imperator: Rome": """You are translating text from the ancient grand strategy game 'Imperator: Rome'.
-Use classical, dignified language appropriate for the Roman Republic period.
-CRITICAL: Do not translate any game codes within brackets or special markers."""
+Use classical, dignified language appropriate for the Roman Republic period."""
 }
 
 def get_enhanced_prompt(game_name, base_prompt):
@@ -64,6 +57,7 @@ class OllamaTranslator:
         self.prompt_template = None
         self.max_retries = 3
         self.checkpoint_enabled = True
+        self.debug_mode = False
         self._consecutive_errors = 0
         self.busy = False
         self._ollama_process = None
@@ -183,39 +177,99 @@ class OllamaTranslator:
         except Exception as e:
             self.log_callback(f"[CHECKPOINT] Failed: {e}")
 
+    _LANG_CODE = {
+        "English":"english","Korean":"korean","Simplified Chinese":"simp_chinese",
+        "French":"french","German":"german","Spanish":"spanish",
+        "Japanese":"japanese","Russian":"russian","Polish":"polish",
+        "Brazilian Portuguese":"braz_por",
+    }
+
     def _translate_batch(self, lines, source_lang, target_lang, model, temperature, max_tokens, game="None", retry_count=0):
-        comment_indices = {i for i, l in enumerate(lines) if not l.strip() or l.strip().startswith('#')}
+        header_pat = re.compile(r'^l_[a-z_]+:\s*$')
+        comment_indices = {i for i, l in enumerate(lines) if not l.strip() or l.strip().startswith('#') or header_pat.match(l)}
         if comment_indices:
             if len(comment_indices) == len(lines):
                 return lines
             actual_lines = [l for i, l in enumerate(lines) if i not in comment_indices]
+            if self.debug_mode: self.log_callback(f"[DEBUG] batch:{len(lines)}lines filter→{len(actual_lines)}content")
             translated_actual = self._translate_batch(actual_lines, source_lang, target_lang, model, temperature, max_tokens, game, 0)
             if self.stop_event.is_set():
                 return lines
             merged = []
             ai = 0
+            tgt_code = self._LANG_CODE.get(target_lang, target_lang.lower())
             for i in range(len(lines)):
-                merged.append(lines[i] if i in comment_indices else translated_actual[ai])
-                ai += 0 if i in comment_indices else 1
+                if i in comment_indices:
+                    l = lines[i]
+                    if header_pat.match(l):
+                        l = f"l_{tgt_code}:"
+                    merged.append(l)
+                else:
+                    merged.append(translated_actual[ai])
+                    ai += 1
             return merged
 
-        batch_text = "\n".join(line.rstrip("\n") for line in lines)
+        # ── Extract values, replace game codes with placeholders ──
+        ph_counter = 0
+        send_data = []      # (cleaned_value, ph_map, key, ws)
+        all_info = []       # per line: {"type": "passthrough"/"keep"/"send", ...}
+
+        for line in lines:
+            stripped = line.strip()
+            m = re.match(r'^([\w.]+):\s*', stripped)
+            if not m:
+                all_info.append({"type": "passthrough", "line": line})
+                continue
+
+            key = m.group(1)
+            ws = line[:len(line) - len(line.lstrip())]
+            value_part = stripped[len(m.group(0)):]
+
+            raw_val = value_part
+            if raw_val.startswith('"') and raw_val.endswith('"'):
+                raw_val = raw_val[1:-1]
+
+            line_phs = []
+            def _ph_replacer(text):
+                nonlocal ph_counter
+                ph = f"{{PH{ph_counter}}}"
+                ph_counter += 1
+                line_phs.append((ph, text))
+                return ph
+
+            cleaned = re.sub(r'\$[^$]+\$', lambda m: _ph_replacer(m.group(0)), raw_val)
+            cleaned = re.sub(r'\[[^\]]*\]', lambda m: _ph_replacer(m.group(0)), cleaned)
+            cleaned = re.sub(r'\u00a7.', lambda m: _ph_replacer(m.group(0)), cleaned)
+            cleaned = re.sub(r'\u00a3[^\u00a3]+\u00a3', lambda m: _ph_replacer(m.group(0)), cleaned)
+
+            only_phs = not cleaned.strip() or re.match(r'^(\{PH\d+\}\s*)+\s*$', cleaned.strip())
+            if only_phs:
+                all_info.append({"type": "keep", "key": key, "ws": ws, "val": value_part, "phs": line_phs})
+            else:
+                idx = len(send_data)
+                all_info.append({"type": "send", "midx": idx, "key": key, "ws": ws})
+                send_data.append((f"⟨{idx}⟩ {cleaned}", line_phs, key, ws))
+
+        if not send_data:
+            return lines
+
+        # ── Send value+marker lines to LLM ──
+        batch_text = "\n".join(s[0] for s in send_data)
+        if self.debug_mode: self.log_callback(f"[DEBUG] sending {len(send_data)} lines to LLM: {repr(batch_text[:200])}")
         if self.prompt_template:
             base_prompt = self.prompt_template.replace("{source_lang}", source_lang)
             base_prompt = base_prompt.replace("{target_lang}", target_lang)
             base_prompt = base_prompt.replace("{batch_text}", batch_text)
         else:
             base_prompt = (
-                f"Translate the following YAML text from '{source_lang}' to '{target_lang}'.\n"
-                f"Rules:\n1. Only translate text after ': ' in double quotes.\n"
-                f"2. Do NOT translate $variables$, [brackets], \u00a7X color codes, or file paths.\n"
-                f"3. Preserve all \\\\n and leading whitespace.\n"
-                f"4. Keep lines like 'l_english:' or comments (#) unchanged.\n"
-                f"5. Output EXACTLY one line per input line.\n"
-                f"6. Do NOT wrap in code blocks or add explanations.\n\n{batch_text}")
+                f"Translate the following text from '{source_lang}' to '{target_lang}'.\n"
+                f"Rules:\n1. Preserve all {{PH0}}, {{PH1}}, etc. placeholders exactly as-is.\n"
+                f"2. Preserve line markers like ⟨0⟩ ⟨1⟩ exactly as-is.\n"
+                f"3. Do NOT wrap in code blocks or add explanations.\n\n{batch_text}")
+
         glossary = self._get_glossary_text(target_lang, game)
         if glossary:
-            cnt = glossary.count("\n") - 4  # 헤더/지시문 제외한 실제 용어 줄 수
+            cnt = glossary.count("\n") - 4
             self.log_callback(f"[GLOSSARY] Applied {game} glossary ({max(0,cnt)} terms)")
         prompt = get_enhanced_prompt(game, base_prompt + glossary)
         result = self._call_ollama(model, prompt, temperature, max_tokens)
@@ -243,22 +297,61 @@ class OllamaTranslator:
         result = result.strip()
         result = re.sub(r"```(?:yaml|yml)?\s*\n?", "", result, flags=re.IGNORECASE)
         result = re.sub(r"\n?```", "", result)
-        translated = result.split("\n")
 
-        if len(translated) != len(lines):
-            if retry_count < self.max_retries:
-                self.log_callback(f"[RETRY {retry_count+1}/{self.max_retries}] Line count mismatch ({len(translated)} vs {len(lines)})")
-                t = min(temperature + 0.1, 1.0)
-                return self._translate_batch(lines, source_lang, target_lang, model, t, max_tokens, game, retry_count + 1)
-            self.log_callback(f"[WARN] Line count mismatch ({len(translated)} vs {len(lines)}), keeping original")
-            if self.live_callback:
-                self.live_callback(lines, lines)
+        if self.debug_mode: self.log_callback(f"[DEBUG] raw response ({len(result)} chars): {repr(result[:300])}")
+
+        # Split by value markers ⟨0⟩ ⟨1⟩ ... (survives even if LLM merges lines)
+        translated_values = re.split(r'⟨\d+⟩\s*', result)
+        if translated_values and translated_values[0].strip() == '':
+            translated_values = translated_values[1:]
+
+        if self.debug_mode: self.log_callback(f"[DEBUG] marker split → {len(translated_values)} values")
+
+        if len(translated_values) != len(send_data):
+            self.log_callback(f"[WARN] LLM returned {len(translated_values)} markers (expected {len(send_data)}), keeping original")
+            for i, tv in enumerate(translated_values):
+                self.log_callback(f"[WARN]   out[{i}]: {repr(tv[:100])}")
             return lines
 
-        if self.live_callback:
-            self.live_callback(lines, translated)
+        # ── Restore placeholders and reconstruct YAML lines ──
+        reconstructed = list(lines)
+        for i, info in enumerate(all_info):
+            t = info["type"]
+            if t == "passthrough":
+                continue
+            elif t == "keep":
+                key, ws, val, phs = info["key"], info["ws"], info["val"], info["phs"]
+                restored = val
+                if restored.startswith('"') and restored.endswith('"'):
+                    restored = restored[1:-1]
+                for ph, orig in phs:
+                    restored = restored.replace(ph, orig)
+                if val.startswith('"'):
+                    restored = restored.replace('\n', '\\n')
+                    reconstructed[i] = f'{ws}{key}: "{restored}"\n'
+                else:
+                    restored = restored.replace('\n', '\\n')
+                    reconstructed[i] = f'{ws}{key}: {restored}\n'
+            else:  # send
+                _, phs, send_key, send_ws = send_data[info["midx"]]
+                raw = translated_values[info["midx"]].strip()
+                if raw and raw != '""':
+                    val = raw.strip('"')
+                    for ph, orig in phs:
+                        val = val.replace(ph, orig)
+                    val = val.replace('\n', '\\n')
+                    reconstructed[i] = f'{send_ws}{send_key}: "{val}"\n'
 
-        return translated
+        # Fix headers
+        reconstructed = [re.sub(r'^l_([a-z]+)::\s*$', r'l_\1:', t) for t in reconstructed]
+        tgt_code = self._LANG_CODE.get(target_lang, target_lang.lower())
+        header_pat = re.compile(r'^l_[a-z_]+:\s*$')
+        reconstructed = [f"l_{tgt_code}:\n" if header_pat.match(t) else t for t in reconstructed]
+
+        if self.live_callback:
+            self.live_callback(lines, reconstructed)
+
+        return reconstructed
 
     def _process_file(self, input_path, output_path, source_lang, target_lang, model, temperature, max_tokens, batch_size, game="None"):
         with codecs.open(input_path, "r", encoding="utf-8-sig") as f:
@@ -276,25 +369,13 @@ class OllamaTranslator:
                 "French": "french", "German": "german", "Spanish": "spanish", "Japanese": "japanese",
                 "Brazilian Portuguese": "braz_por", "Russian": "russian", "Polish": "polish"
             }.get(target_lang, target_lang.lower())
-            result.append(f"l_{target_code}:{first[first.index(':'):]}\n")
+            result.append(f"l_{target_code}:{first[first.index(':') + 1:]}")
             content = lines[1:]
         else:
             result.append(first)
             content = lines[1:]
 
-        resume_from = 0
-        # 체크포인트(부분 번역본)가 있으면 이어서 번역, 완료된 파일이면 처음부터
-        if self.checkpoint_enabled and os.path.exists(output_path):
-            try:
-                with codecs.open(output_path, "r", encoding="utf-8-sig") as f:
-                    existing = f.readlines()
-                if 1 < len(existing) < total:
-                    result = existing
-                    resume_from = len(existing) - 1
-                    self.log_callback(f"  Resuming from line {resume_from + 1} ({len(existing)}/{total})")
-            except Exception:
-                pass
-        for i in range(resume_from, len(content), batch_size):
+        for i in range(0, len(content), batch_size):
             if self.stop_event.is_set():
                 self.log_callback("[STOPPED] Translation interrupted")
                 if len(result) > 1:
@@ -310,13 +391,6 @@ class OllamaTranslator:
         with codecs.open(output_path, "w", encoding="utf-8-sig") as f:
             f.writelines(result)
         self.log_callback(f"  Saved: {output_path}")
-        if self.checkpoint_enabled:
-            cp_path = os.path.join(os.path.dirname(CONFIG_FILE), "checkpoint", os.path.basename(output_path))
-            if os.path.exists(cp_path):
-                try:
-                    os.remove(cp_path)
-                except Exception:
-                    pass
 
     def _worker(self, input_dir, output_dir, source_lang, target_lang, model, temperature, max_tokens, batch_size, game="None"):
         _codes = {"English": "english", "Korean": "korean", "Simplified Chinese": "simp_chinese",
@@ -507,8 +581,17 @@ class OllamaTranslator:
         self.stop_event.clear()
         self.max_retries = max_retries
         self.busy = True
-        self.thread = threading.Thread(target=self._worker, args=(
-            input_dir, output_dir, source_lang, target_lang, model, temperature, max_tokens, batch_size, game), daemon=True)
+        def _run():
+            try:
+                self._worker(input_dir, output_dir, source_lang, target_lang, model, temperature, max_tokens, batch_size, game)
+            except Exception as e:
+                self.log_callback(f"[FATAL] Unhandled error in translation thread: {e}")
+                import traceback
+                for line in traceback.format_exc().split("\n"):
+                    self.log_callback(line)
+                self.busy = False
+                self.status_callback("idle")
+        self.thread = threading.Thread(target=_run, daemon=True)
         self.thread.start()
 
     def stop(self):
@@ -540,6 +623,7 @@ class OllamaTranslatorGUI(ctk.CTk):
         self.available_games = list(GAME_PROMPTS.keys())
         self.show_prompt = ctk.BooleanVar(value=False)
         self.checkpoint_enabled = ctk.BooleanVar(value=True)
+        self.debug_mode = ctk.BooleanVar(value=False)
         self.prompt_template_var = ctk.StringVar(value=self._default_prompt())
         self.live_visible = ctk.BooleanVar(value=False)
         self._connected = False
@@ -667,13 +751,10 @@ class OllamaTranslatorGUI(ctk.CTk):
         self.start_btn.configure(state="normal" if (ok and self._connected) else "disabled")
 
     def _default_prompt(self):
-        return ("Translate the following YAML text from '{source_lang}' to '{target_lang}'.\n"
-                "Rules:\n1. Only translate text after ': ' in double quotes.\n"
-                "2. Do NOT translate $variables$, [brackets], \u00a7X color codes, or file paths.\n"
-                "3. Preserve all \\n and leading whitespace.\n"
-                "4. Keep lines like 'l_english:' or comments (#) unchanged.\n"
-                "5. Output EXACTLY one line per input line.\n"
-                "6. Do NOT wrap in code blocks or add explanations.\n\n{batch_text}")
+        return ("Translate the following text from '{source_lang}' to '{target_lang}'.\n"
+                "Rules:\n1. Preserve all {{PH0}}, {{PH1}}, etc. placeholders exactly as-is.\n"
+                "2. Preserve line markers like ⟨0⟩ ⟨1⟩ exactly as-is.\n"
+                "3. Do NOT wrap in code blocks or add explanations.\n\n{batch_text}")
 
     # ============================================================
     # UI 구성
@@ -703,7 +784,7 @@ class OllamaTranslatorGUI(ctk.CTk):
         self.progress_text.grid(row=0, column=1, padx=5)
 
         # --- Live Output ---
-        self.live_frame = ctk.CTkFrame(t_trans, height=200)
+        self.live_frame = ctk.CTkFrame(t_trans, height=120)
         self.live_frame.grid_propagate(False)
         self.live_frame.grid(row=6, column=0, padx=10, pady=0, sticky="ew")
         self.live_frame.grid_columnconfigure(0, weight=1)
@@ -791,6 +872,8 @@ class OllamaTranslatorGUI(ctk.CTk):
         ctk.CTkCheckBox(cb_frame, text="Edit Prompt", variable=self.show_prompt,
                         font=ctk.CTkFont(size=12), command=self._toggle_prompt).pack(side="left", padx=0)
         ctk.CTkCheckBox(cb_frame, text="Checkpoint", variable=self.checkpoint_enabled,
+                        font=ctk.CTkFont(size=12)).pack(side="left", padx=(15, 0))
+        ctk.CTkCheckBox(cb_frame, text="Debug Log", variable=self.debug_mode,
                         font=ctk.CTkFont(size=12)).pack(side="left", padx=(15, 0))
         self.prompt_frame = ctk.CTkFrame(t_trans)
         self.prompt_frame.grid(row=3, column=0, padx=10, pady=0, sticky="ew")
@@ -999,7 +1082,7 @@ class OllamaTranslatorGUI(ctk.CTk):
                 out_path = os.path.join(root, fn)
                 rel = os.path.relpath(root, out)
                 src_code = {"English":"english","Korean":"korean","Simplified Chinese":"simp_chinese","French":"french","German":"german","Spanish":"spanish","Japanese":"japanese","Russian":"russian","Polish":"polish","Brazilian Portuguese":"braz_por"}.get(src, src.lower())
-                in_path = os.path.join(inp, rel, re.sub(r'^l_[a-z]+_', f'l_{src_code}_', fn, flags=re.IGNORECASE))
+                in_path = os.path.join(inp, rel, re.sub(r'_?l_[a-z]+_', f'_l_{src_code}_', fn, flags=re.IGNORECASE))
                 if not os.path.exists(in_path):
                     continue
                 matched += 1
@@ -1820,8 +1903,9 @@ class OllamaTranslatorGUI(ctk.CTk):
         self.progress_bar.set(0)
         self.progress_text.configure(text="0 / 0 lines")
 
-        # 체크포인트 복구
+        # 체크포인트 복구 + 디버그
         self.engine.checkpoint_enabled = self.checkpoint_enabled.get()
+        self.engine.debug_mode = self.debug_mode.get()
         if self.checkpoint_enabled.get():
             cp_dir = os.path.join(os.path.dirname(CONFIG_FILE), "checkpoint")
             if os.path.isdir(cp_dir):
