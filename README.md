@@ -1,7 +1,7 @@
 # Ollama Paradox Mod Translator
 AI 제작
 
-https://github.com/dltpsk03/pdx_mod_translator 을 기반으로 로컬 Ollama LLM 을 사용하여 Yml파일을 번역하는 도구(현재 Stellaris만 테스트완료)
+https://github.com/dltpsk03/pdx_mod_translator 을 기반으로 로직을 수정하여 로컬 Ollama LLM 을 사용하여 Yml파일을 번역하는 도구(현재 Stellaris만 테스트완료)
 
 ## 사용법
 
