@@ -10,7 +10,7 @@ https://github.com/dltpsk03/pdx_mod_translator 를 기반으로 제작된 Ollama
 2. Translator 실행후 Start Ollama버튼 클릭(Ollama 서버실행및 모델 목록 새로고침)
 3. 자동으로 모델과 서버URL을 불러오며 모델이 여러개일경우 번역에 사용할 모델 선택
 4. Source(원본 언어), Target(번역할 언어) 선택
-5. Input Folder(변역할 모드의 localisation폴더 ), Output Folder(번역본을 저장할 폴더) 지정
+5. Input Folder(번역할 모드 폴더)및 Output Folder(자동으로 지정되며 수동 지정가능) 경로 지정
 6. 게임 프리셋 선택및 번역 세부설정(본인 GPU및 모델에따라 지정)
 7. Start Translation 클릭
 
