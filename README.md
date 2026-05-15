@@ -1,6 +1,6 @@
 # Ollama Paradox Mod Translator
-AI 제작
-아직 제작중이므로 기능이 불안정 할 수 있음                         
+AI로 제작됨.        
+아직 번역탭 말고는 미완성 이므로 기능이 불안정 할 수 있음                         
 https://github.com/dltpsk03/pdx_mod_translator 를 기반으로 제작된 Ollama LLM 을 사용하는 번역기                              
 (현재 Stellaris만 테스트완료)
 
