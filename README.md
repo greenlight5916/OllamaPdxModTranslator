@@ -14,4 +14,4 @@ https://github.com/dltpsk03/pdx_mod_translator 을 기반으로 로컬 Ollama LL
 ## 요구사항
 
 - [Ollama](https://ollama.ai) 로컬 서버
-- 번역용 LLM 모델 (본인 GPU의 VREM에 맞는 모델 선택)
+- 번역용 LLM 모델 (본인 GPU에 맞는 모델 선택)
