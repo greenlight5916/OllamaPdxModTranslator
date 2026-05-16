@@ -1,4 +1,4 @@
-import os, sys, json, time, re, threading, subprocess, concurrent.futures
+import os, sys, json, time, re, threading, subprocess, concurrent.futures, traceback
 import requests, customtkinter as ctk
 from tkinter import filedialog, messagebox
 
@@ -251,7 +251,7 @@ class OllamaTranslator:
                 f"2. Preserve line markers like \u27e80\u27e9 \u27e81\u27e9 exactly as-is.\n"
                 f"3. Do NOT wrap in code blocks or add explanations.\n\n{batch_text}")
 
-        glossary = self._get_glossary_text(target_lang, game)
+        glossary = self._get_glossary_text(source_lang, target_lang, game)
         if glossary:
             cnt = glossary.count("\n") - 4
             self.log_callback(f"[GLOSSARY] Applied {game} glossary ({max(0,cnt)} terms)")
@@ -338,11 +338,7 @@ class OllamaTranslator:
         first = lines[0]
         id_match = re.match(r"^(l_[a-z]+:)", first)
         if id_match:
-            target_code = {
-                "English": "english", "Korean": "korean", "Simplified Chinese": "simp_chinese",
-                "French": "french", "German": "german", "Spanish": "spanish", "Japanese": "japanese",
-                "Brazilian Portuguese": "braz_por", "Russian": "russian", "Polish": "polish"
-            }.get(target_lang, target_lang.lower())
+            target_code = self._LANG_CODE.get(target_lang, target_lang.lower())
             result.append(f"l_{target_code}:{first[first.index(':') + 1:]}")
             content = lines[1:]
         else:
@@ -364,11 +360,8 @@ class OllamaTranslator:
         self.log_callback(f"  Saved: {output_path}")
 
     def _worker(self, input_dir, output_dir, source_lang, target_lang, model, temperature, max_tokens, batch_size, game="None"):
-        _codes = {"English": "english", "Korean": "korean", "Simplified Chinese": "simp_chinese",
-                  "French": "french", "German": "german", "Spanish": "spanish", "Japanese": "japanese",
-                  "Russian": "russian", "Polish": "polish", "Brazilian Portuguese": "braz_por"}
-        source_code = _codes.get(source_lang, source_lang.lower())
-        target_code = _codes.get(target_lang, target_lang.lower())
+        source_code = self._LANG_CODE.get(source_lang, source_lang.lower())
+        target_code = self._LANG_CODE.get(target_lang, target_lang.lower())
         files = []
         for root, dirs, fnames in os.walk(input_dir):
             if root[len(input_dir):].count(os.sep) >= 1:
@@ -441,13 +434,14 @@ class OllamaTranslator:
         return d
 
     @staticmethod
-    def _get_glossary_text(target_lang, game_name="None"):
+    def _get_glossary_text(source_lang, target_lang, game_name="None"):
         combined = {}
         game_dir = os.path.join(OllamaTranslator._glossary_dir(), game_name)
         if not os.path.isdir(game_dir):
             return ""
         try:
-            files = sorted([f for f in os.listdir(game_dir) if f.endswith(f"_{target_lang.lower()}.txt")], reverse=True)
+            pattern = f"{source_lang.lower()}_{target_lang.lower()}.txt"
+            files = sorted([f for f in os.listdir(game_dir) if f.lower() == pattern], reverse=True)
             for fn in files:
                 with open(os.path.join(game_dir, fn), "r", encoding="utf-8") as f:
                     for line in f:
@@ -566,6 +560,7 @@ class OllamaTranslator:
 # ── GUI ──
 
 class OllamaTranslatorGUI(ctk.CTk):
+    _PREFIX_TO_LANG = {f"l_{v}": k for k, v in OllamaTranslator._LANG_CODE.items()}
 
     def __init__(self):
         super().__init__()
@@ -590,9 +585,11 @@ class OllamaTranslatorGUI(ctk.CTk):
         self.prompt_template_var = ctk.StringVar(value=self._default_prompt())
         self.live_visible = ctk.BooleanVar(value=False)
         self._connected = False
+        self._g_running = False
         self._m_modname = "mod"
         self._g_page = 0
-        self._g_per_page = 20
+        self._g_per_page_var = ctk.StringVar(value="20")
+        self._g_dirty = False
         self._m_page = 0
         self._m_per_page = 20
         self._validate_file_pairs = []
@@ -601,6 +598,8 @@ class OllamaTranslatorGUI(ctk.CTk):
         self._validate_page = 0
         self._validate_hide_filter = ctk.BooleanVar(value=False)
         self._validate_per_page = ctk.IntVar(value=20)
+        self._validate_g_page = 0
+        self._validate_g_per_page_var = ctk.StringVar(value="20")
         self.available_langs = ["English", "Korean", "Simplified Chinese", "French", "German",
                                 "Spanish", "Japanese", "Brazilian Portuguese", "Russian", "Polish"]
         self.engine = OllamaTranslator(
@@ -702,19 +701,21 @@ class OllamaTranslatorGUI(ctk.CTk):
     def _on_close(self):
         self._g_running = False
         self._m_running = False
-        if getattr(self, '_validate_modified', None):
-            dlg = ctk.CTkToplevel(self, fg_color="white")
+        dirty = getattr(self, '_g_dirty', False) or bool(getattr(self, '_validate_modified', None))
+        if dirty:
+            dlg = ctk.CTkToplevel(self)
             dlg.title("Exit")
             dlg.transient(self)
             dlg.grab_set()
             dlg.grid_columnconfigure(0, weight=1)
             result = [None]
-            ctk.CTkLabel(dlg, text="Save changes before exiting?", font=ctk.CTkFont(size=13), text_color="black").grid(row=0, column=0, pady=(15,10))
-            bf = ctk.CTkFrame(dlg, fg_color="white")
+            ctk.CTkLabel(dlg, text="Save changes before exiting?", font=ctk.CTkFont(size=13)).grid(row=0, column=0, pady=(15, 10), padx=20)
+            bf = ctk.CTkFrame(dlg, fg_color="transparent")
             bf.grid(row=1, column=0, pady=5)
             for i, t in enumerate(["Save & Exit", "Exit", "Cancel"]):
-                ctk.CTkButton(bf, text=t, width=100, fg_color="#D32F2F" if i == 1 else "#2E7D32" if i == 0 else "#757575",
-                              text_color="white", hover_color="#E53935" if i == 1 else "#388E3C" if i == 0 else "#9E9E9E",
+                ctk.CTkButton(bf, text=t, width=100,
+                              fg_color="#D32F2F" if i == 1 else "#2E7D32" if i == 0 else "#757575",
+                              hover_color="#E53935" if i == 1 else "#388E3C" if i == 0 else "#9E9E9E",
                               command=lambda v=i: [result.__setitem__(0, [True, False, None][v]), dlg.destroy()]).pack(side="left", padx=5)
             dlg.update_idletasks()
             pw, ph = self.winfo_width(), self.winfo_height()
@@ -725,7 +726,10 @@ class OllamaTranslatorGUI(ctk.CTk):
             if result[0] is None:
                 return
             if result[0]:
-                self._validate_save()
+                if getattr(self, '_g_dirty', False):
+                    self._game_save()
+                if getattr(self, '_validate_modified', None):
+                    self._validate_save()
         self.engine.kill_server()
         self._save_config()
         self.destroy()
@@ -736,6 +740,9 @@ class OllamaTranslatorGUI(ctk.CTk):
                   self.source_lang.get(), self.target_lang.get()])
         st = "normal" if (ok and self._connected) else "disabled"
         self.start_btn.configure(state=st)
+        if hasattr(self, '_g_validate_btn'):
+            gst = "normal" if self._connected and self.ollama_model.get() not in ("", "(none)") else "disabled"
+            self._g_validate_btn.configure(state=gst)
         if hasattr(self, '_validate_retry_btn'):
             self._validate_retry_btn.configure(state=st)
 
@@ -927,35 +934,32 @@ class OllamaTranslatorGUI(ctk.CTk):
         game_tab = gl_sub.add("GAME")
         mod_tab = gl_sub.add("MOD")
         game_tab.grid_columnconfigure(0, weight=1)
-        game_tab.grid_rowconfigure(7, weight=1)
-        LANG_KEYS = ["English","Korean","Simplified Chinese","French","German","Spanish","Japanese","Russian","Polish","Brazilian Portuguese"]
+        game_tab.grid_rowconfigure(5, weight=1)
         r = 0
-        ctk.CTkLabel(game_tab, text="Game:", font=ctk.CTkFont(size=12)).grid(row=r, column=0, padx=10, pady=(10,2), sticky="w")
-        r += 1
-        self._g_game_var = ctk.StringVar(value=self.available_games[0])
-        ctk.CTkComboBox(game_tab, variable=self._g_game_var, values=self.available_games, state="readonly").grid(row=r, column=0, padx=10, pady=2, sticky="ew")
-        r += 1
         self._g_folder_var = ctk.StringVar()
         fgf = ctk.CTkFrame(game_tab, fg_color="transparent")
-        fgf.grid(row=r, column=0, padx=10, pady=2, sticky="ew")
+        fgf.grid(row=r, column=0, padx=10, pady=(10,2), sticky="ew")
         fgf.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(fgf, text="Lang Folder:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        ctk.CTkLabel(fgf, text="Game Path:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         ctk.CTkEntry(fgf, textvariable=self._g_folder_var).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         ctk.CTkButton(fgf, text="Browse", width=70, command=self._g_browse).grid(row=0, column=2, padx=5, pady=5)
         r += 1
         lf1 = ctk.CTkFrame(game_tab, fg_color="transparent")
         lf1.grid(row=r, column=0, padx=10, pady=2, sticky="ew")
+        self._g_game_var = ctk.StringVar(value=self.available_games[0])
+        ctk.CTkLabel(lf1, text="Game:").pack(side="left", padx=5)
+        ctk.CTkComboBox(lf1, variable=self._g_game_var, values=self.available_games, state="readonly", width=150).pack(side="left", padx=5)
         self._g_src_var = ctk.StringVar(value="English")
-        ctk.CTkLabel(lf1, text="Source:").pack(side="left", padx=5)
-        ctk.CTkComboBox(lf1, variable=self._g_src_var, values=LANG_KEYS, state="readonly", width=150).pack(side="left", padx=5)
-        ctk.CTkLabel(lf1, text="  Target:").pack(side="left", padx=5)
+        ctk.CTkLabel(lf1, text="  Source:").pack(side="left", padx=5)
+        ctk.CTkComboBox(lf1, variable=self._g_src_var, values=self.available_langs, state="readonly", width=150).pack(side="left", padx=5)
         self._g_tgt_var = ctk.StringVar(value="Korean")
-        ctk.CTkComboBox(lf1, variable=self._g_tgt_var, values=LANG_KEYS, state="readonly", width=150).pack(side="left", padx=5)
+        ctk.CTkLabel(lf1, text="  Target:").pack(side="left", padx=5)
+        ctk.CTkComboBox(lf1, variable=self._g_tgt_var, values=self.available_langs, state="readonly", width=150).pack(side="left", padx=5)
         r += 1
         lf2 = ctk.CTkFrame(game_tab, fg_color="transparent")
         lf2.grid(row=r, column=0, padx=10, pady=2, sticky="ew")
         self._g_min_var = ctk.StringVar(value="3")
-        ctk.CTkLabel(lf2, text="Min co-occurrence:").pack(side="left", padx=5)
+        ctk.CTkLabel(lf2, text="Min frequency:").pack(side="left", padx=5)
         ctk.CTkEntry(lf2, textvariable=self._g_min_var, width=50).pack(side="left", padx=5)
         ctk.CTkButton(lf2, text="Extract", fg_color="#1565C0", command=self._game_extract).pack(side="left", padx=15)
         r += 1
@@ -984,11 +988,17 @@ class OllamaTranslatorGUI(ctk.CTk):
         self._g_page_label.pack(side="left", padx=5)
         ctk.CTkButton(pgf, text="< Prev", width=60, command=self._g_prev_page).pack(side="left", padx=5)
         ctk.CTkButton(pgf, text="Next >", width=60, command=self._g_next_page).pack(side="left", padx=5)
+        ctk.CTkLabel(pgf, text="  Lines/page:").pack(side="left", padx=2)
+        _g_pp_entry = ctk.CTkEntry(pgf, textvariable=self._g_per_page_var, width=50)
+        _g_pp_entry.pack(side="left", padx=5)
+        _g_pp_entry.bind("<KeyRelease>", lambda e: self._game_update_display(self._g_search_var.get()))
         r += 1
         gbtn = ctk.CTkFrame(game_tab, fg_color="transparent")
         gbtn.grid(row=r, column=0, padx=10, pady=5, sticky="ew")
         ctk.CTkButton(gbtn, text="Save Glossary", fg_color="#2E7D32", command=self._game_save).pack(side="left", padx=5)
         ctk.CTkButton(gbtn, text="Load Glossary", command=self._game_load).pack(side="left", padx=5)
+        self._g_validate_btn = ctk.CTkButton(gbtn, text="Validate With LLM", fg_color="#7B1FA2", command=self._game_validate)
+        self._g_validate_btn.pack(side="left", padx=5)
         mod_tab.grid_columnconfigure(0, weight=1)
         mod_tab.grid_rowconfigure(6, weight=1)
         r = 0
@@ -1010,10 +1020,10 @@ class OllamaTranslatorGUI(ctk.CTk):
         mlf = ctk.CTkFrame(mod_tab, fg_color="transparent")
         mlf.grid(row=r, column=0, padx=10, pady=2, sticky="ew")
         ctk.CTkLabel(mlf, text="Source:").pack(side="left", padx=5)
-        self._m_src_combo = ctk.CTkComboBox(mlf, variable=self._m_src_var, values=LANG_KEYS, state="readonly", width=150)
+        self._m_src_combo = ctk.CTkComboBox(mlf, variable=self._m_src_var, values=self.available_langs, state="readonly", width=150)
         self._m_src_combo.pack(side="left", padx=5)
         ctk.CTkLabel(mlf, text="  Target:").pack(side="left", padx=5)
-        self._m_tgt_combo = ctk.CTkComboBox(mlf, variable=self._m_tgt_var, values=LANG_KEYS, state="readonly", width=150)
+        self._m_tgt_combo = ctk.CTkComboBox(mlf, variable=self._m_tgt_var, values=self.available_langs, state="readonly", width=150)
         self._m_tgt_combo.pack(side="left", padx=5)
         r += 1
         self._m_min_var = ctk.StringVar(value="3")
@@ -1066,8 +1076,8 @@ class OllamaTranslatorGUI(ctk.CTk):
         if not inp or not out or not src or not tgt:
             self._validate_msg.configure(text="Set Input/Output folders and languages in Translate tab first", text_color="red")
             return
-        src_code = {"English":"english","Korean":"korean","Simplified Chinese":"simp_chinese","French":"french","German":"german","Spanish":"spanish","Japanese":"japanese","Russian":"russian","Polish":"polish","Brazilian Portuguese":"braz_por"}.get(src, src.lower())
-        tgt_code = {"English":"korean","Korean":"korean","Simplified Chinese":"simp_chinese","French":"french","German":"german","Spanish":"spanish","Japanese":"japanese","Russian":"russian","Polish":"polish","Brazilian Portuguese":"braz_por"}.get(tgt, tgt.lower())
+        src_code = OllamaTranslator._LANG_CODE.get(src, src.lower())
+        tgt_code = OllamaTranslator._LANG_CODE.get(tgt, tgt.lower())
         self._validate_file_pairs = []
         for root, dirs, fnames in os.walk(inp):
             if root[len(inp):].count(os.sep) >= 1:
@@ -1456,19 +1466,106 @@ class OllamaTranslatorGUI(ctk.CTk):
             tokens.append(t)
         return tokens
 
-    LANG_PREFIX = {
-        "English":"l_english","Korean":"l_korean","Simplified Chinese":"l_simp_chinese",
-        "French":"l_french","German":"l_german","Spanish":"l_spanish",
-        "Japanese":"l_japanese","Russian":"l_russian","Polish":"l_polish",
-        "Brazilian Portuguese":"l_braz_por",
-    }
-    PREFIX_TO_LANG = {v: k for k, v in LANG_PREFIX.items()}
 
     PLATFORM_PATTERNS = [
         r'steamapps[\\/]common[\\/]([^\\/]+)',
         r'GOG Games[\\/]([^\\/]+)',
         r'GOG Galaxy[\\/]Games[\\/]([^\\/]+)',
     ]
+
+    _stopwords_cache = {}
+
+    @staticmethod
+    def _load_stopwords(src_lang="en"):
+        if src_lang in OllamaTranslatorGUI._stopwords_cache:
+            return OllamaTranslatorGUI._stopwords_cache[src_lang]
+        # 1. user-customizable file in glossary dir
+        ext = os.path.join(OllamaTranslator._glossary_dir(), "glossary_stopwords.json")
+        if os.path.isfile(ext):
+            try:
+                with open(ext, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    s = set(data.get(src_lang, []))
+                    OllamaTranslatorGUI._stopwords_cache[src_lang] = s
+                    return s
+            except Exception:
+                pass
+        # 2. bundled fallback
+        try:
+            if getattr(sys, 'frozen', False):
+                path = os.path.join(sys._MEIPASS, "glossary", "glossary_stopwords.json")
+            else:
+                path = os.path.join(_app_dir(), "glossary", "glossary_stopwords.json")
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                s = set(data.get(src_lang, []))
+                OllamaTranslatorGUI._stopwords_cache[src_lang] = s
+                return s
+        except Exception:
+            OllamaTranslatorGUI._stopwords_cache[src_lang] = set()
+            return set()
+
+    @staticmethod
+    def _stem_en(word):
+        w = word
+        if len(w) > 5 and w.endswith('isation'):
+            w = w[:-5]
+        elif len(w) > 5 and w.endswith('ation'):
+            w = w[:-3]
+        elif len(w) > 4 and w.endswith('ment'):
+            w = w[:-4]
+        elif len(w) > 4 and w.endswith('ness'):
+            w = w[:-4]
+        elif len(w) > 4 and w.endswith('able'):
+            w = w[:-4]
+        elif len(w) > 4 and w.endswith('ible'):
+            w = w[:-4]
+        elif len(w) > 4 and w.endswith('ful'):
+            w = w[:-3]
+        elif len(w) > 4 and w.endswith('less'):
+            w = w[:-4]
+        elif len(w) > 4 and w.endswith('ing'):
+            w = w[:-3]
+            if len(w) > 3 and w[-1] == w[-2]:
+                w = w[:-1]
+        elif len(w) > 3 and w.endswith('ied'):
+            w = w[:-3] + 'y'
+        elif len(w) > 3 and w.endswith('ed'):
+            w = w[:-2]
+            if len(w) > 3 and w[-1] == w[-2]:
+                w = w[:-1]
+        elif len(w) > 3 and w.endswith('ly'):
+            w = w[:-2]
+        elif len(w) > 3 and w.endswith('er'):
+            w = w[:-2]
+        elif len(w) > 3 and w.endswith('est'):
+            w = w[:-3]
+        elif len(w) > 3 and w.endswith('ies'):
+            w = w[:-3] + 'y'
+        elif len(w) > 3 and w.endswith('es') and not w.endswith('ies'):
+            w = w[:-2]
+        elif len(w) > 3 and w.endswith('s') and not w.endswith('ss'):
+            w = w[:-1]
+        return w
+
+    @staticmethod
+    def _tokenize_game_en(val, src_prefix="l_english"):
+        tokens = []
+        for m in re.finditer(r"[a-zA-Z]+(?:'[a-zA-Z]+)?", val.lower()):
+            t = m.group()
+            for p in re.split(r'[_-]', t):
+                p = p.strip("'")
+                if len(p) >= 3 and p not in OllamaTranslatorGUI._load_stopwords(src_prefix):
+                    p = OllamaTranslatorGUI._stem_en(p)
+                    tokens.append(p)
+        return tokens
+
+    @staticmethod
+    def _tokenize_tgt_pure(val):
+        tokens = []
+        for m in re.finditer(r'[\uAC00-\uD7AF]+', val):
+            tokens.append(m.group())
+        return tokens
 
     def _detect_game_from_path(self, path):
         for pat in self.PLATFORM_PATTERNS:
@@ -1481,30 +1578,39 @@ class OllamaTranslatorGUI(ctk.CTk):
 
     def _g_browse(self):
         d = filedialog.askdirectory()
-        if d:
-            self._g_folder_var.set(d)
-            game = self._detect_game_from_path(d)
-            if game:
-                self._g_game_var.set(game)
-            langs = self._detect_languages(d)
-            if langs:
-                self._g_src_var.set(langs[0] if langs[0] else "English")
-                if len(langs) > 1:
-                    self._g_tgt_var.set(langs[1])
-                elif langs and langs[0] == "English":
-                    self._g_tgt_var.set("Korean")
+        if not d:
+            return
+        self._g_folder_var.set(d)
+        loc_dir = d
+        for sub in ("localisation", "localization"):
+            p = os.path.join(d, sub)
+            if os.path.isdir(p):
+                loc_dir = p
+                break
+        game = self._detect_game_from_path(d)
+        if game:
+            self._g_game_var.set(game)
+            self.selected_game.set(game)
+        langs = self._detect_languages(loc_dir)
+        if langs:
+            self._g_src_var.set(langs[0] if langs[0] else "English")
+            if len(langs) > 1:
+                self._g_tgt_var.set(langs[1])
+            elif langs and langs[0] == "English":
+                self._g_tgt_var.set("Korean")
+        self._save_config()
 
     def _detect_languages(self, folder):
         langs = set()
         for entry in os.listdir(folder):
             epath = os.path.join(folder, entry)
             if os.path.isdir(epath):
-                for code, lang in self.PREFIX_TO_LANG.items():
+                for code, lang in self._PREFIX_TO_LANG.items():
                     if entry.lower() == code[len("l_"):]:
                         langs.add(lang)
             elif entry.endswith((".yml", ".yaml")):
-                for code, lang in self.PREFIX_TO_LANG.items():
-                    if entry.lower().startswith(code):
+                for code, lang in self._PREFIX_TO_LANG.items():
+                    if code in entry.lower():
                         langs.add(lang)
         return sorted(langs, key=lambda x: self.available_langs.index(x) if x in self.available_langs else 99)
 
@@ -1540,80 +1646,135 @@ class OllamaTranslatorGUI(ctk.CTk):
         folder = self._g_folder_var.get()
         src_lang = self._g_src_var.get()
         tgt_lang = self._g_tgt_var.get()
-        min_co = int(self._g_min_var.get())
+        min_freq = int(self._g_min_var.get())
         if not folder or not os.path.isdir(folder):
-            self.log("[ERROR] Select a folder first")
+            self.log("[ERROR] Select a game folder first")
             return
-        src_pre = self.LANG_PREFIX.get(src_lang, f"l_{src_lang.lower()}")
-        tgt_pre = self.LANG_PREFIX.get(tgt_lang, f"l_{tgt_lang.lower()}")
+        loc_dir = folder
+        for sub in ("localisation", "localization"):
+            p = os.path.join(folder, sub)
+            if os.path.isdir(p):
+                loc_dir = p
+                break
 
         def _run():
-            self._g_running = True
-            pairs = []
-            for root, _, fnames in os.walk(folder):
-                src_files = {}
-                tgt_files = {}
-                for fn in fnames:
-                    if fn.startswith(src_pre) and fn.endswith((".yml", ".yaml")):
-                        src_files[fn] = os.path.join(root, fn)
-                    if fn.startswith(tgt_pre) and fn.endswith((".yml", ".yaml")):
-                        tgt_files[fn] = os.path.join(root, fn)
-                for sfn, sp in src_files.items():
-                    base = sfn[len(src_pre):]
-                    tfn = tgt_pre + base
-                    if tfn in tgt_files:
-                        pairs.append((sp, tgt_files[tfn]))
-            if not pairs:
-                self.after(0, lambda: self.log("[ERROR] No paired language files found"))
-                self._g_running = False
-                return
-            total_pairs = len(pairs)
-            self.after(0, lambda: self.log(f"Found {total_pairs} file pairs. Extracting..."))
-            all_entries = []
-            for pi, (sp, tp) in enumerate(pairs):
-                if getattr(self, '_g_running', False) is False:
-                    break
-                src_data = self._parse_yml(sp)
-                tgt_data = self._parse_yml(tp)
-                common = set(src_data.keys()) & set(tgt_data.keys())
-                for key in common:
-                    en = self._tokenize_en(src_data[key])
-                    ko = self._tokenize_tgt(tgt_data[key])
-                    if not en or not ko:
+            try:
+                self._g_running = True
+                self.after(0, lambda: self._g_progress.set(0))
+                self.after(0, lambda: self._g_info_label.configure(text="Scanning files..."))
+                all_files = {}
+                for root, _, fnames in os.walk(loc_dir):
+                    for fn in fnames:
+                        if not fn.endswith((".yml", ".yaml")):
+                            continue
+                        for code, lang in self._PREFIX_TO_LANG.items():
+                            lower_fn = fn.lower()
+                            if code in lower_fn:
+                                idx = lower_fn.index(code)
+                                base = fn[:idx] + fn[idx + len(code):]
+                                all_files.setdefault(base, {})[lang] = os.path.join(root, fn)
+                                break
+                pairs = []
+                for base, lang_map in all_files.items():
+                    if src_lang in lang_map and tgt_lang in lang_map:
+                        pairs.append((lang_map[src_lang], lang_map[tgt_lang]))
+                if not pairs:
+                    self.after(0, lambda: self.log("[ERROR] No paired language files found"))
+                    return
+                total_pairs = len(pairs)
+                self.after(0, lambda: self.log(f"Found {total_pairs} file pairs. Extracting..."))
+                src_freq = {}
+                tgt_freq = {}
+                cooccur = {}
+                for pi, (sp, tp) in enumerate(pairs):
+                    if getattr(self, '_g_running', False) is False:
+                        break
+                    src_data = self._parse_yml(sp)
+                    tgt_data = self._parse_yml(tp)
+                    common = set(src_data.keys()) & set(tgt_data.keys())
+                    for key in common:
+                        src_tokens = self._tokenize_game_en(src_data[key], f"l_{OllamaTranslator._LANG_CODE.get(src_lang, src_lang)}")
+                        tgt_tokens = self._tokenize_tgt_pure(tgt_data[key])
+                        tgt_tokens = [t for t in tgt_tokens if t not in OllamaTranslatorGUI._load_stopwords(f"l_{OllamaTranslator._LANG_CODE.get(tgt_lang, tgt_lang)}")]
+                        if not src_tokens or not tgt_tokens:
+                            continue
+                        for st in src_tokens:
+                            src_freq[st] = src_freq.get(st, 0) + 1
+                            if st not in cooccur:
+                                cooccur[st] = {}
+                            for tt in tgt_tokens:
+                                tgt_freq[tt] = tgt_freq.get(tt, 0) + 1
+                                cooccur[st][tt] = cooccur[st].get(tt, 0) + 1
+                    self.after(0, lambda p=pi+1, t=total_pairs: (
+                        self._g_progress.set(p/t if t > 0 else 0),
+                        self._g_info_label.configure(text=f"Scanning {p}/{t}...")
+                    ))
+                # Dice coefficient scoring: 2 * cooccur / (src_freq + tgt_freq)
+                dice_best = {}
+                for st, td in cooccur.items():
+                    sf = src_freq.get(st, 0)
+                    if sf < min_freq:
                         continue
-                    en_set, ko_set = set(en), set(ko)
-                    cooccur = len(en_set & ko_set)
-                    score = 2 * cooccur / (len(en_set) + len(ko_set)) if (len(en_set) + len(ko_set)) > 0 else 0
-                    if cooccur >= min_co:
-                        all_entries.append((score, key, src_data[key], tgt_data[key]))
-                self.after(0, lambda p=pi+1, t=total_pairs: self._g_progress.configure(
-                    progress=p/t if t > 0 else 0) or self._g_info_label.configure(
-                    text=f"Scanning {p}/{t}..." if hasattr(self, '_g_info_label') else ""))
-            all_entries.sort(key=lambda x: -x[0])
-            self._g_all_entries = [(k, s, t) for _, k, s, t in all_entries]
-            self._g_page = 0
-            self.after(0, lambda: self._game_update_display())
-            self.after(0, lambda: self.log(f"Extracted {len(all_entries)} glossary entries"))
-            self._g_running = False
+                    for tt, c in td.items():
+                        tf = tgt_freq.get(tt, 0)
+                        dice = 2 * c / (sf + tf) if (sf + tf) > 0 else 0
+                        if st not in dice_best or dice > dice_best[st][1]:
+                            dice_best[st] = (tt, dice, sf)
+                # Deduplicate: if same Korean token is best for multiple English, keep highest Dice
+                tgt_dedup = {}
+                for st, (tt, dice, sf) in dice_best.items():
+                    if tt not in tgt_dedup or dice > tgt_dedup[tt][1]:
+                        tgt_dedup[tt] = (st, dice, sf)
+                entries = [(st, tt, sf) for tt, (st, dice, sf) in tgt_dedup.items()]
+                entries.sort(key=lambda x: -x[2])
+                self._g_entries = entries
+                self._g_checked = {}
+                self._g_page = 0
+                self._g_dirty = False
+                self.after(0, lambda: self._g_progress.set(1))
+                self.after(0, lambda: self._game_update_display())
+                self.after(0, lambda: self.log(f"Extracted {len(entries)} glossary terms"))
+            except Exception as e:
+                tb = traceback.format_exc()
+                self.after(0, lambda tb=tb: self.log(f"[ERROR] _game_extract:\n{tb}"))
+            finally:
+                self._g_running = False
         threading.Thread(target=_run, daemon=True).start()
+
+    def _g_per_page(self):
+        v = self._g_per_page_var.get().strip().lower()
+        if v == "all":
+            return 10**9
+        try:
+            return max(1, int(v))
+        except (ValueError, TypeError):
+            return 20
 
     def _game_update_display(self, filter_text=""):
         for w in self._g_result_frame.winfo_children():
             w.destroy()
-        entries = self._g_all_entries if hasattr(self, '_g_all_entries') else []
+        entries = self._g_entries if hasattr(self, '_g_entries') else []
         if filter_text:
-            entries = [e for e in entries if filter_text.lower() in e[1].lower() or filter_text.lower() in e[2].lower()]
+            entries = [e for e in entries if filter_text.lower() in e[0].lower()]
         total = len(entries)
-        start = self._g_page * self._g_per_page
-        end = start + self._g_per_page
+        pp = self._g_per_page()
+        start = self._g_page * pp
+        end = start + pp
         page_entries = entries[start:end]
-        for idx, (key, src, tgt) in enumerate(page_entries):
+        checked = getattr(self, '_g_checked', {})
+        for idx, (src_tok, tgt_tok, freq) in enumerate(page_entries):
             row = idx
-            ctk.CTkLabel(self._g_result_frame, text=f"{key}", anchor="w").grid(row=row, column=0, sticky="w", padx=5)
-            ctk.CTkLabel(self._g_result_frame, text=f"{src}", anchor="w").grid(row=row, column=1, sticky="w", padx=5)
-            ctk.CTkLabel(self._g_result_frame, text=f"{tgt}", anchor="w").grid(row=row, column=2, sticky="w", padx=5)
-        self._g_page_label.configure(text=f"Page {self._g_page+1}/{(total-1)//self._g_per_page+1 if total > 0 else 1} ({total} entries)")
-        self._g_info_label.configure(text=f"{total} entries" if total else "No entries")
+            ctk.CTkCheckBox(self._g_result_frame, text="").grid(row=row, column=0, padx=2)
+            ctk.CTkLabel(self._g_result_frame, text=src_tok, anchor="w").grid(row=row, column=1, sticky="w", padx=5)
+            trans = checked.get(src_tok, tgt_tok)
+            e = ctk.CTkEntry(self._g_result_frame, width=300)
+            e.grid(row=row, column=2, sticky="ew", padx=5)
+            e.insert(0, trans)
+            e.bind("<KeyRelease>", lambda _: setattr(self, '_g_dirty', True))
+            ctk.CTkLabel(self._g_result_frame, text=str(freq), anchor="e", width=40).grid(row=row, column=3, sticky="e", padx=5)
+        total_pages = (total - 1) // pp + 1 if total > 0 else 1
+        self._g_page_label.configure(text=f"Page {self._g_page+1}/{total_pages} ({total} terms)")
+        self._g_info_label.configure(text=f"{total} terms" if total else "No terms")
 
     def _g_prev_page(self):
         if self._g_page > 0:
@@ -1621,41 +1782,432 @@ class OllamaTranslatorGUI(ctk.CTk):
             self._game_update_display(self._g_search_var.get())
 
     def _g_next_page(self):
-        entries = self._g_all_entries if hasattr(self, '_g_all_entries') else []
-        if (self._g_page + 1) * self._g_per_page < len(entries):
+        entries = self._g_entries if hasattr(self, '_g_entries') else []
+        if (self._g_page + 1) * self._g_per_page() < len(entries):
             self._g_page += 1
             self._game_update_display(self._g_search_var.get())
 
     def _game_save(self):
-        path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text files", "*.txt")])
-        if not path:
+        game = self._g_game_var.get()
+        src = self._g_src_var.get()
+        tgt = self._g_tgt_var.get()
+        if not game:
+            self.log("[ERROR] Select a game first")
             return
-        entries = self._g_all_entries if hasattr(self, '_g_all_entries') else []
+        gdir = os.path.join(OllamaTranslator._glossary_dir(), game)
+        os.makedirs(gdir, exist_ok=True)
+        path = os.path.join(gdir, f"{src}_{tgt}.txt".lower())
+        checked = getattr(self, '_g_checked', {})
+        entries = self._g_entries if hasattr(self, '_g_entries') else []
         try:
             with open(path, "w", encoding="utf-8") as f:
-                for _, key, src, tgt in entries:
-                    f.write(f"{key}:{src}|{tgt}\n")
+                for src_tok, tgt_tok, _ in entries:
+                    trans = checked.get(src_tok, tgt_tok)
+                    if trans:
+                        f.write(f"{src_tok}:{trans}\n")
             self.log(f"[GLOSSARY] Saved: {path}")
+            self._g_dirty = False
         except Exception as e:
             self.log(f"[ERROR] Save failed: {e}")
 
     def _game_load(self):
-        path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
-        if not path:
+        game = self._g_game_var.get()
+        src = self._g_src_var.get()
+        tgt = self._g_tgt_var.get()
+        if not game:
+            self.log("[ERROR] Select a game first")
+            return
+        path = os.path.join(OllamaTranslator._glossary_dir(), game, f"{src}_{tgt}.txt".lower())
+        if not os.path.isfile(path):
+            self.log(f"[GLOSSARY] No glossary file found: {path}")
             return
         try:
-            entries = []
+            checked = {}
             with open(path, "r", encoding="utf-8") as f:
                 for line in f:
-                    m = re.match(r'^([\w.]+):(.+)\|(.+)$', line.strip())
-                    if m:
-                        entries.append((m.group(1), m.group(2), m.group(3)))
-            self._g_all_entries = [(0, k, s, t) for _, k, s, t in entries]
+                    parts = line.strip().split(":", 1)
+                    if len(parts) == 2:
+                        checked[parts[0].strip()] = parts[1].strip()
+            self._g_checked = checked
+            self._g_entries = [(k, v, 0) for k, v in checked.items()]
             self._g_page = 0
             self._game_update_display()
-            self.log(f"[GLOSSARY] Loaded {len(entries)} entries")
+            self._g_dirty = False
+            self.log(f"[GLOSSARY] Loaded {len(checked)} terms from: {path}")
         except Exception as e:
             self.log(f"[ERROR] Load failed: {e}")
+
+    def _game_validate(self):
+        if not hasattr(self, '_g_entries') or not self._g_entries:
+            self.log("[ERROR] No glossary entries to validate. Extract or load first.")
+            return
+        src_display = self._g_src_var.get()
+        tgt_display = self._g_tgt_var.get()
+        game = self._g_game_var.get()
+        entries = list(self._g_entries)
+        checked = dict(getattr(self, '_g_checked', {}))
+        src_code = OllamaTranslator._LANG_CODE.get(src_display, src_display.lower())
+        tgt_code = OllamaTranslator._LANG_CODE.get(tgt_display, tgt_display.lower())
+        cache_path = os.path.join(OllamaTranslator._glossary_dir(), game, f"_validate_{src_code}_{tgt_code}.json")
+
+        # Store for later use by _g_validate_run_llm
+        self._validate_cache_path = cache_path
+        self._validate_game = game
+        self._validate_src_display = src_display
+        self._validate_tgt_display = tgt_display
+
+        # Check for cached validation results
+        if os.path.isfile(cache_path):
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    cached = json.load(f)
+                self.log(f"[VALIDATE] Loaded {len(cached)} cached validation results for {game}")
+                self._g_validate_win(entries, checked, cached)
+                self._g_validate_done(cached)
+                return
+            except Exception:
+                self.log("[VALIDATE] Cache load failed")
+
+        # No cache → open empty window with Run LLM button
+        self._g_validate_win(entries, checked, {})
+
+    def _g_validate_run_llm(self):
+        if not hasattr(self, '_validate_toplevel') or not self._validate_toplevel:
+            return
+        model = self.ollama_model.get()
+        if not model or model == "(none)":
+            self.log("[ERROR] Select a model in the Translate tab first")
+            return
+        entries = self._validate_entries
+        checked = self._validate_checked
+        tgt_display = self._validate_tgt_display
+        game = self._validate_game
+        cache_path = self._validate_cache_path
+        batch_size = max(1, self.batch_size.get())
+        self.engine.set_base_url(self.ollama_url.get())
+        self.log(f"[VALIDATE] Validating {len(entries)} terms with {model} ({batch_size}/batch)...")
+        self._validate_info.configure(text="Starting LLM validation...")
+        self._validate_progress.set(0)
+        # Remove the Run LLM button if still present (main thread)
+        def _remove_btn():
+            for w in self._validate_toplevel.grid_slaves():
+                try:
+                    if int(w.grid_info()["row"]) == 3:
+                        w.destroy()
+                except Exception:
+                    pass
+        _remove_btn()
+        def _run():
+            try:
+                all_results = {}
+                total_batches = (len(entries) + batch_size - 1) // batch_size
+                for bi in range(0, len(entries), batch_size):
+                    batch = entries[bi:bi + batch_size]
+                    batch_num = bi // batch_size + 1
+                    prompt = (
+                        f"Review these English -> {tgt_display} glossary terms for the game '{game}'.\n"
+                        "For each term, reply in this exact format:\n"
+                        "term: OK\n"
+                        "term: REJECT:suggested_translation\n\n"
+                        "- OK = translation is approximately correct for game context.\n"
+                        "- REJECT = translation is completely wrong or unrelated.\n"
+                        "  Provide a suggested correct translation after the second colon.\n\n"
+                    )
+                    for e in batch:
+                        cur = checked.get(e[0], e[1])
+                        prompt += f"{e[0]} -> {cur}\n"
+                    result = self.engine._call_ollama(model, prompt, temperature=0.1, max_tokens=4096)
+                    for line in result.split("\n"):
+                        line = line.strip()
+                        if ":" in line and not line.startswith("```") and not line.startswith("#"):
+                            parts = line.split(":", 1)
+                            src = parts[0].strip().lower()
+                            rest = parts[1].strip()
+                            rest_up = rest.upper()
+                            if rest_up.startswith("OK"):
+                                all_results[src] = ("OK", "")
+                            elif rest_up.startswith("REJECT"):
+                                sug = rest.split(":", 1)[1].strip() if ":" in rest else ""
+                                all_results[src] = ("REJECT", sug)
+                    self.after(0, lambda p=batch_num, t=total_batches: (
+                        self._update_validate_progress(p / t if t > 0 else 0, f"Validating {p}/{t}...")
+                    ))
+                # Save cache
+                try:
+                    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                    with open(cache_path, "w", encoding="utf-8") as f:
+                        json.dump(all_results, f)
+                except Exception:
+                    pass
+                self.after(0, lambda: self._g_validate_done(all_results))
+            except Exception as e:
+                tb = traceback.format_exc()
+                self.after(0, lambda e=e, tb=tb: self.log(f"[ERROR] _g_validate_run_llm:\n{tb}"))
+                self.after(0, lambda: self._g_validate_info.configure(text="LLM validation failed"))
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _g_validate_win(self, entries, checked, llm_results):
+        if hasattr(self, '_validate_toplevel') and self._validate_toplevel:
+            try:
+                self._validate_toplevel.destroy()
+            except Exception:
+                pass
+        win = ctk.CTkToplevel(self)
+        win.title(f"Validate Glossary - {self._g_game_var.get()}")
+        win.geometry("900x650")
+        win.minsize(600, 400)
+        win.transient(self)
+        win.protocol("WM_DELETE_WINDOW", self._g_validate_cancel)
+        self._validate_toplevel = win
+        win.grid_columnconfigure(0, weight=1)
+        win.grid_rowconfigure(2, weight=1)
+        progress = ctk.CTkProgressBar(win)
+        progress.grid(row=0, column=0, padx=10, pady=(10, 2), sticky="ew")
+        progress.set(0)
+        self._validate_progress = progress
+        info = ctk.CTkLabel(win, text="Waiting for LLM response...")
+        info.grid(row=1, column=0, padx=10, pady=(0, 5), sticky="w")
+        self._validate_info = info
+        frame = ctk.CTkScrollableFrame(win)
+        frame.grid(row=2, column=0, padx=10, pady=5, sticky="nsew")
+        frame.grid_columnconfigure(2, weight=1)
+        frame.grid_columnconfigure(3, weight=0)
+        self._validate_frame = frame
+        self._validate_entries = entries
+        self._validate_checked = dict(checked)
+        self._validate_llm = dict(llm_results)
+        self._validate_row_widgets = []
+        # Show Run LLM button if no cached results
+        if not llm_results:
+            self._validate_info.configure(text="No cached validation results.")
+            btn = ctk.CTkButton(win, text="Run LLM Validation", fg_color="#7B1FA2",
+                                command=self._g_validate_run_llm, height=40, font=ctk.CTkFont(size=14, weight="bold"))
+            btn.grid(row=3, column=0, padx=10, pady=10)
+
+    def _update_validate_progress(self, val, text):
+        if hasattr(self, '_validate_progress') and self._validate_progress:
+            self._validate_progress.set(val)
+        if hasattr(self, '_validate_info') and self._validate_info:
+            self._validate_info.configure(text=text)
+
+    def _g_validate_g_per_page(self):
+        v = self._validate_g_per_page_var.get().strip().lower()
+        if v == "all":
+            return 10**9
+        try:
+            return max(1, int(v))
+        except (ValueError, TypeError):
+            return 20
+
+    def _g_validate_done(self, llm_results):
+        if not hasattr(self, '_validate_toplevel') or not self._validate_toplevel:
+            return
+        self._validate_llm = llm_results
+        entries = self._validate_entries
+        checked = self._validate_checked
+        reject_count = sum(1 for v in llm_results.values() if isinstance(v, (list, tuple)) and v[0] == "REJECT")
+        show_all_var = ctk.BooleanVar(value=False)
+        self._validate_show_all = show_all_var
+
+        def _render(*_):
+            for w in self._validate_frame.winfo_children():
+                w.destroy()
+            self._validate_row_widgets = []
+            # Filter checkbox row
+            ff = ctk.CTkFrame(self._validate_frame, fg_color="transparent")
+            ff.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 2))
+            ctk.CTkCheckBox(ff, text="Show all terms (including OK)", variable=show_all_var, command=_render).pack(side="left", padx=5)
+            lbl_text = f"({reject_count} REJECTED)" if reject_count else "(All OK)"
+            lbl_color = "orange" if reject_count else "green"
+            ctk.CTkLabel(ff, text=lbl_text, text_color=lbl_color).pack(side="left", padx=5)
+            # Header
+            cf = ctk.CTkFrame(self._validate_frame, fg_color="transparent")
+            cf.grid(row=1, column=0, columnspan=3, sticky="ew")
+            for ci, txt in enumerate(["Source", "Current Glossary", "Correction", "Select"]):
+                kwargs = {"anchor": "w", "font": ctk.CTkFont(size=11, weight="bold")}
+                ctk.CTkLabel(cf, text=txt, **kwargs).grid(row=0, column=ci, sticky="w", padx=5)
+            ctk.CTkFrame(self._validate_frame, height=1, fg_color="#444444").grid(row=2, column=0, columnspan=4, sticky="ew")
+            # Pre-filter rows to render
+            to_render = []
+            for src_tok, tgt_tok, freq in entries:
+                src_lower = src_tok.lower()
+                result = llm_results.get(src_lower)
+                if not isinstance(result, (list, tuple)):
+                    continue
+                verdict, suggestion = result
+                if verdict == "OK" and not show_all_var.get():
+                    continue
+                cur = checked.get(src_tok, tgt_tok)
+                default_val = suggestion if verdict == "REJECT" and suggestion else cur
+                to_render.append((src_tok, cur, default_val, freq, verdict))
+            self._validate_to_render = to_render
+            # Page clamping
+            pp = self._g_validate_g_per_page()
+            max_page = max(0, (len(to_render) - 1) // pp) if to_render else 0
+            if self._validate_g_page > max_page:
+                self._validate_g_page = max_page
+            start = self._validate_g_page * pp
+            end = start + pp
+            page_items = to_render[start:end]
+            # Info text
+            info_text = f"Done. {len(llm_results)}/{len(entries)} terms. "
+            if reject_count:
+                info_text += f"{reject_count} REJECTED. " + ("Showing all." if show_all_var.get() else "Showing only REJECTED.")
+            else:
+                info_text += "All terms OK."
+            self._validate_info.configure(text=info_text)
+            # Batch render page rows
+            BATCH = 30
+            def _render_batch(i):
+                for j in range(i, min(i + BATCH, len(page_items))):
+                    src_tok, cur, default_val, freq, verdict = page_items[j]
+                    r = j + 3
+                    ctk.CTkLabel(self._validate_frame, text=src_tok, anchor="w", font=ctk.CTkFont(size=11)).grid(row=r, column=0, sticky="w", padx=5, pady=2)
+                    ctk.CTkLabel(self._validate_frame, text=cur, anchor="w", font=ctk.CTkFont(size=11), text_color="red" if verdict == "REJECT" else "gray").grid(row=r, column=1, sticky="w", padx=5, pady=2)
+                    e = ctk.CTkEntry(self._validate_frame, font=ctk.CTkFont(size=11))
+                    e.grid(row=r, column=2, sticky="ew", padx=5, pady=2)
+                    e.insert(0, default_val)
+                    cb_var = ctk.BooleanVar(value=(verdict == "REJECT"))
+                    ctk.CTkCheckBox(self._validate_frame, text="", variable=cb_var, width=20).grid(row=r, column=3, padx=5, pady=2)
+                    self._validate_row_widgets.append((src_tok, freq, e, verdict, cb_var))
+                if i + BATCH < len(page_items):
+                    self.after(5, lambda: _render_batch(i + BATCH))
+                else:
+                    self._g_validate_show_nav()
+            _render_batch(0)
+
+        _render()
+
+    def _g_validate_show_nav(self):
+        if not hasattr(self, '_validate_toplevel') or not self._validate_toplevel:
+            return
+        self._validate_progress.set(1)
+        # Page nav row
+        vgf = ctk.CTkFrame(self._validate_toplevel, fg_color="transparent")
+        vgf.grid(row=3, column=0, padx=10, pady=(0, 2), sticky="ew")
+        def _nav_refresh():
+            self._validate_g_page = 0
+            self._g_validate_done(self._validate_llm)
+        self._validate_g_page_label = ctk.CTkLabel(vgf, text="")
+        self._validate_g_page_label.pack(side="left", padx=5)
+        ctk.CTkButton(vgf, text="< Prev", width=60, command=self._g_validate_prev_page).pack(side="left", padx=5)
+        ctk.CTkButton(vgf, text="Next >", width=60, command=self._g_validate_next_page).pack(side="left", padx=5)
+        ctk.CTkLabel(vgf, text="  Lines/page:").pack(side="left", padx=2)
+        _vg_pp = ctk.CTkEntry(vgf, textvariable=self._validate_g_per_page_var, width=50)
+        _vg_pp.pack(side="left", padx=5)
+        _vg_pp.bind("<KeyRelease>", lambda e: _nav_refresh())
+        self._g_validate_update_page_label()
+        # Button row
+        bf = ctk.CTkFrame(self._validate_toplevel, fg_color="transparent")
+        bf.grid(row=4, column=0, padx=10, pady=(0, 10), sticky="ew")
+        ctk.CTkButton(bf, text="Apply Changes", fg_color="#2E7D32", command=self._g_validate_apply).pack(side="left", padx=5)
+        ctk.CTkButton(bf, text="Re-validate Selected", fg_color="#1565C0", command=self._g_validate_retry_selected).pack(side="left", padx=5)
+        ctk.CTkButton(bf, text="Cancel", command=self._g_validate_cancel).pack(side="left", padx=5)
+
+    def _g_validate_update_page_label(self):
+        if not hasattr(self, '_validate_to_render') or not hasattr(self, '_validate_g_page_label'):
+            return
+        total = len(self._validate_to_render)
+        pp = self._g_validate_g_per_page()
+        tp = (total - 1) // pp + 1 if total > 0 else 1
+        self._validate_g_page_label.configure(text=f"Page {self._validate_g_page+1}/{tp} ({total} terms)")
+
+    def _g_validate_prev_page(self):
+        if self._validate_g_page > 0:
+            self._validate_g_page -= 1
+            self._g_validate_done(self._validate_llm)
+
+    def _g_validate_next_page(self):
+        total = len(getattr(self, '_validate_to_render', []))
+        pp = self._g_validate_g_per_page()
+        if (self._validate_g_page + 1) * pp < total:
+            self._validate_g_page += 1
+            self._g_validate_done(self._validate_llm)
+
+    def _g_validate_apply(self):
+        if not hasattr(self, '_validate_row_widgets'):
+            return
+        new_checked = dict(self._validate_checked)
+        new_entries = list(self._validate_entries)
+        updated = 0
+        for src_tok, freq, entry, verdict, cb_var in self._validate_row_widgets:
+            user_val = entry.get().strip()
+            if user_val:
+                new_checked[src_tok] = user_val
+                for i, (st, _, f) in enumerate(new_entries):
+                    if st == src_tok:
+                        new_entries[i] = (st, user_val, f)
+                        updated += 1
+                        break
+        if not updated:
+            self.log("[VALIDATE] Nothing to change")
+            return
+        self._g_checked = new_checked
+        self._g_entries = new_entries
+        self._g_page = 0
+        self._game_update_display()
+        self.log(f"[VALIDATE] Updated {updated} REJECTED terms")
+        self._g_validate_cancel()
+
+    def _g_validate_retry_selected(self):
+        if not hasattr(self, '_validate_row_widgets'):
+            return
+        selected = [(st, e.get().strip()) for st, _, e, _, cb in self._validate_row_widgets if cb.get() and e.get().strip()]
+        if not selected:
+            self.log("[VALIDATE] No terms selected for re-validation")
+            return
+        model = self.ollama_model.get()
+        if not model or model == "(none)":
+            self.log("[ERROR] Select a model first")
+            return
+        tgt_display = self._g_tgt_var.get()
+        game = self._g_game_var.get()
+        self._validate_info.configure(text=f"Re-validating {len(selected)} terms...")
+        self._validate_progress.set(0)
+        def _run():
+            try:
+                prompt = (
+                    f"Review these English -> {tgt_display} glossary terms for the game '{game}'.\n"
+                    "For each term, reply in this exact format:\n"
+                    "term: OK\n"
+                    "term: REJECT:suggested_translation\n\n"
+                    "- OK = translation is approximately correct for game context.\n"
+                    "- REJECT = translation is completely wrong or unrelated.\n"
+                    "  Provide a suggested correct translation after the second colon.\n\n"
+                )
+                for src, cur in selected:
+                    prompt += f"{src} -> {cur}\n"
+                result = self.engine._call_ollama(model, prompt, temperature=0.1, max_tokens=4096)
+                for line in result.split("\n"):
+                    line = line.strip()
+                    if ":" in line and not line.startswith("```") and not line.startswith("#"):
+                        parts = line.split(":", 1)
+                        src = parts[0].strip().lower()
+                        rest = parts[1].strip()
+                        rest_up = rest.upper()
+                        if rest_up.startswith("OK"):
+                            self._validate_llm[src] = ("OK", "")
+                        elif rest_up.startswith("REJECT"):
+                            sug = rest.split(":", 1)[1].strip() if ":" in rest else ""
+                            self._validate_llm[src] = ("REJECT", sug)
+                self.after(0, lambda: self._g_validate_done(self._validate_llm))
+            except Exception as e:
+                tb = traceback.format_exc()
+                self.after(0, lambda: self.log(f"[ERROR] _g_validate_retry_selected:\n{tb}"))
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _g_validate_cancel(self):
+        if hasattr(self, '_validate_toplevel') and self._validate_toplevel:
+            self._validate_toplevel.destroy()
+            del self._validate_toplevel
+        for attr in ('_validate_frame', '_validate_progress', '_validate_info',
+                     '_validate_entries', '_validate_checked', '_validate_llm',
+                     '_validate_row_widgets', '_validate_to_render',
+                     '_validate_g_page_label', '_validate_g_per_page_var',
+                     '_validate_cache_path', '_validate_game',
+                     '_validate_src_display', '_validate_tgt_display'):
+            if hasattr(self, attr):
+                delattr(self, attr)
 
     # ── Glossary MOD tab ──
 
@@ -1718,8 +2270,10 @@ class OllamaTranslatorGUI(ctk.CTk):
                         tr = parts[1].strip()
                         if t in dict(pending):
                             self._m_llm_checked[t] = tr
-                self.after(0, lambda i=idx+len(batch), t=len(pending): self._m_progress.configure(
-                    progress=i/t if t > 0 else 0) or self._m_info_label.configure(text=f"Translating {i}/{t}..."))
+                self.after(0, lambda i=idx+len(batch), t=len(pending): (
+                    self._m_progress.set(i/t if t > 0 else 0),
+                    self._m_info_label.configure(text=f"Translating {i}/{t}...")
+                ))
             self.after(0, lambda: self._mod_update_display())
             self.after(0, lambda: self.log(f"Translated {len(self._m_llm_checked)} terms"))
             self._m_llm_running = False
@@ -1797,12 +2351,8 @@ class OllamaTranslatorGUI(ctk.CTk):
     def _browse_input(self):
         d = filedialog.askdirectory()
         if d:
-            _codes = {"English":"english","Korean":"korean","Simplified Chinese":"simp_chinese",
-                      "French":"french","German":"german","Spanish":"spanish",
-                      "Japanese":"japanese","Russian":"russian","Polish":"polish",
-                      "Brazilian Portuguese":"braz_por"}
-            src_code = _codes.get(self.source_lang.get(), "").lower()
-            tgt_code = _codes.get(self.target_lang.get(), "").lower()
+            src_code = OllamaTranslator._LANG_CODE.get(self.source_lang.get(), "").lower()
+            tgt_code = OllamaTranslator._LANG_CODE.get(self.target_lang.get(), "").lower()
             for sub in ("localisation", "localization"):
                 p = os.path.join(d, sub)
                 if os.path.isdir(p):
