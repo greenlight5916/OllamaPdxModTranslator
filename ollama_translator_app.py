@@ -82,7 +82,7 @@ class OllamaTranslatorGUI(ctk.CTk, GlossaryTabMixin):
                                 "Spanish", "Japanese", "Brazilian Portuguese", "Russian", "Polish"]
         self.engine = OllamaTranslator(
             log_callback=self.log, progress_callback=self.update_progress,
-            status_callback=self.set_status, stop_event=self.stop_event,
+            status_callback=self.set_status,
             live_callback=self._on_live_result
         )
         self._build_ui()
