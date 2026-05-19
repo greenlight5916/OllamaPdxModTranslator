@@ -110,6 +110,26 @@ def tokenize_tgt(val, src_prefix="l_korean"):
             tokens.append(t)
     return tokens
 
+def tokenize_mod_en(val, src_prefix="l_english"):
+    tokens = []
+    stopwords = load_stopwords(src_prefix)
+    covered = set()
+    for m in re.finditer(r'[a-zA-Z]+_[a-zA-Z]+(?:[_-][a-zA-Z]+)*', val.lower()):
+        for i in range(m.start(), m.end()):
+            covered.add(i)
+    for m in re.finditer(r'[a-zA-Z]+-[a-zA-Z]+(?:-[a-zA-Z]+)*', val.lower()):
+        for i in range(m.start(), m.end()):
+            covered.add(i)
+        tokens.append(m.group())
+    for m in re.finditer(r"[a-zA-Z]+", val.lower()):
+        if m.start() in covered:
+            continue
+        t = m.group().strip("'")
+        if len(t) >= 3 and t not in stopwords:
+            t = stem_en(t)
+            tokens.append(t)
+    return tokens
+
 def parse_yml(val):
     data = {}
     for line in val.split("\n"):

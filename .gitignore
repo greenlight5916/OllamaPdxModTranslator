@@ -1,8 +1,6 @@
 # Build artifacts
-0.1/
 __pycache__/
 *.pyc
-*.spec
 build/
 dist/
 *.exe
@@ -11,12 +9,11 @@ dist/
 *.log
 rog/
 rog.txt
-ollama_translator_config.json
 
 # Generated folders
 untranslated/
 checkpoint/
-glossary/
 localisation/
 source/
 target/
+checkpoints/
