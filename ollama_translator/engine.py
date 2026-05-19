@@ -342,7 +342,6 @@ class OllamaTranslator:
                 for ph, orig in phs:
                     restored = restored.replace(ph, orig)
                 restored = restored.replace('\n', '\\n')
-                restored = restored.replace('"', "'")
                 lt = f'{loc_type} ' if loc_type else ' '
                 reconstructed[i] = f'{ws}{key}:{lt}"{restored}"\n'
             else:
@@ -362,7 +361,6 @@ class OllamaTranslator:
                     for ph, orig in phs:
                         val = val.replace(ph, orig)
                     val = val.replace('\n', '\\n')
-                    val = val.replace('"', "'")
                     lt = f'{lt_inline} ' if lt_inline else ' '
                     reconstructed[i] = f'{send_ws}{send_key}:{lt}"{val}"\n'
 
