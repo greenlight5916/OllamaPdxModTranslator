@@ -6,7 +6,7 @@ from ollama_translator.engine import OllamaTranslator
 from ollama_translator.utils import (
     _PREFIX_TO_LANG, PLATFORM_PATTERNS,
     tokenize_game_en, tokenize_tgt_pure, parse_yml,
-    tokenize_mod_en, load_stopwords, _glossary_dir
+    tokenize_mod_en, load_stopwords, _glossary_dir, _derive_modname
 )
 
 class GlossaryTabMixin:
@@ -59,7 +59,7 @@ class GlossaryTabMixin:
             return
         self._m_folder_var.set(path)
         self.input_dir.set(path)
-        self._m_modname = self._derive_modname(path)
+        self._m_modname = _derive_modname(path)
         game = self._detect_game_from_path(path)
         if game:
             self.selected_game.set(game)
@@ -70,17 +70,6 @@ class GlossaryTabMixin:
                 self.target_lang.set(langs[1])
             elif langs and langs[0] == "English":
                 self.target_lang.set("Korean")
-
-    @staticmethod
-    def _derive_modname(path):
-        if not path:
-            return "mod"
-        skip = {"localisation", "localization", "english", "korean", "simp_chinese", "french", "german", "spanish", "japanese", "russian", "polish", "braz_por"}
-        parts = re.split(r'[\\/]', path.rstrip("\\/"))
-        for p in reversed(parts):
-            if p.lower() not in skip:
-                return p
-        return parts[-1] if parts else "mod"
 
     # ── 인 게임 용어로 통일하기 위해 개발했으나 현재 개발중단 ──
     # # ── Glossary GAME tab ──
@@ -936,7 +925,7 @@ class GlossaryTabMixin:
         if not folder or not os.path.isdir(folder):
             self.log("[ERROR] Select a valid mod folder first")
             return
-        modname = self._derive_modname(folder)
+        modname = _derive_modname(folder)
         self._m_modname = modname
         src = self.source_lang.get()
         tgt = self.target_lang.get()
@@ -964,7 +953,7 @@ class GlossaryTabMixin:
         if not folder or not os.path.isdir(folder):
             self.log("[ERROR] Select a valid mod folder first")
             return
-        modname = self._derive_modname(folder)
+        modname = _derive_modname(folder)
         src = self.source_lang.get()
         tgt = self.target_lang.get()
         src_code = OllamaTranslator._LANG_CODE.get(src, src.lower())

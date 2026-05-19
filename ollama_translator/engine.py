@@ -273,18 +273,18 @@ class OllamaTranslator:
                     f"[GLOSSARY]\n{glossary}\n\n[TEXT TO TRANSLATE]\n{batch_text}")
             else:
                 base_prompt = base_prompt.replace("{batch_text}", batch_text)
+            prompt = get_enhanced_prompt(game, base_prompt)
         else:
-            base_prompt = (
+            instructions = (
                 f"Translate the following text from '{source_lang}' to '{target_lang}'.\n"
                 f"Rules:\n1. Preserve all {{PH0}}, {{PH1}}, etc. placeholders exactly as-is.\n"
                 f"2. Preserve line markers like \u27e80\u27e9 \u27e81\u27e9 exactly as-is.\n"
                 f"3. Do NOT wrap in code blocks or add explanations.\n"
                 f"4. Translate proper nouns (person names, place names, character names) based on pronunciation, not meaning.")
+            prompt = get_enhanced_prompt(game, instructions)
             if glossary:
-                base_prompt += f"\n\n[GLOSSARY]\n{glossary}\n\n[TEXT TO TRANSLATE]\n{batch_text}"
-            else:
-                base_prompt += f"\n\n{batch_text}"
-        prompt = get_enhanced_prompt(game, base_prompt)
+                prompt += f"\n\n[GLOSSARY]\n{glossary}"
+            prompt += f"\n\n[TEXT TO TRANSLATE]\n{batch_text}"
         result = self._call_ollama(model, prompt, temperature, max_tokens, num_ctx=num_ctx, timeout=timeout)
 
         if result.startswith("[OLLAMA_"):
@@ -369,8 +369,12 @@ class OllamaTranslator:
             self.live_callback(lines, reconstructed)
         return reconstructed
 
-    def _process_file(self, input_path, output_path, source_lang, target_lang, model, temperature, max_tokens, batch_size, num_ctx=4096, game="None", timeout=90, mod_folder=""):
-        with open(input_path, "r", encoding="utf-8-sig") as f:
+    def _process_file(self, input_path, output_path, source_lang, target_lang, model, temperature, max_tokens, batch_size, num_ctx=4096, game="None", timeout=90, mod_folder="", file_index=1, total_files=1):
+        with open(input_path, "rb") as _f:
+            raw = _f.read(3)
+        has_bom = raw.startswith(b'\xef\xbb\xbf')
+        enc = "utf-8-sig" if has_bom else "utf-8"
+        with open(input_path, "r", encoding=enc) as f:
             lines = f.readlines()
         if not lines:
             return
@@ -409,10 +413,10 @@ class OllamaTranslator:
             self.log_callback(f"  Translating lines {len(result)+1}-{len(result)+len(batch)}/{total}")
             translated = self._translate_batch(batch, source_lang, target_lang, model, temperature, max_tokens, num_ctx, game, timeout=timeout, mod_folder=mod_folder)
             result.extend(translated)
-            self.progress_callback(min(len(result), total), total)
+            self.progress_callback(min(len(result), total), total, file_index, total_files)
             if i % (batch_size * 5) == 0:
                 self._save_checkpoint(result, output_path)
-        with open(output_path, "w", encoding="utf-8-sig") as f:
+        with open(output_path, "w", encoding=enc) as f:
             f.writelines(result)
         self.log_callback(f"  Saved: {output_path}")
 
@@ -440,16 +444,17 @@ class OllamaTranslator:
             self.status_callback("idle")
             return
 
-        def _translate_one(filepath):
+        def _translate_one(filepath, fi, nf):
             if self.stop_event.is_set():
                 return
             base = os.path.basename(filepath)
             out_fn = re.sub(re.escape(f"l_{source_code}"), f"l_{target_code}", base, count=1, flags=re.IGNORECASE)
             out_path = os.path.join(output_dir, out_fn)
-            self._process_file(filepath, out_path, source_lang, target_lang, model, temperature, max_tokens, batch_size, num_ctx, game, timeout, mod_folder)
+            self._process_file(filepath, out_path, source_lang, target_lang, model, temperature, max_tokens, batch_size, num_ctx, game, timeout, mod_folder, file_index=fi, total_files=nf)
 
+        nfiles = len(files)
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            futures = {executor.submit(_translate_one, f): f for f in files}
+            futures = {executor.submit(_translate_one, f, i+1, nfiles): f for i, f in enumerate(files)}
             concurrent.futures.wait(futures.keys())
         if self.stop_event.is_set():
             self.busy = False
@@ -465,7 +470,7 @@ class OllamaTranslator:
                 spath = os.path.join(output_dir, fname.replace(f"l_{target_code2}", f"l_{source_code2}", 1))
                 tpath = os.path.join(output_dir, fname)
                 if os.path.isfile(spath):
-                    issues = self.check_quality(spath, tpath)
+                    issues = self.check_quality(spath, tpath, source_lang, target_lang)
                     if issues:
                         self.log_callback(f"  ⚠ {fname}: {issues}")
         self.log_callback("✓ All files processed")
@@ -503,15 +508,21 @@ class OllamaTranslator:
         tgt_code = OllamaTranslator._LANG_CODE.get(target_lang, target_lang.lower())
         suffix = f"_{src_code}_{tgt_code}.txt".lower()
         exact_name = f"{src_code}_{tgt_code}.txt"
+        # ── Derive mod name from folder to filter matching glossary files ──
+        mod_prefix = ""
+        if mod_folder:
+            from ollama_translator.utils import _derive_modname
+            mod_prefix = _derive_modname(mod_folder).lower() + "_"
         terms = []
         seen = set()
         files = sorted(os.listdir(game_dir))
         for fn in files:
             if not fn.endswith(".txt"):
                 continue
-            if fn.lower() == exact_name.lower():
+            fn_lower = fn.lower()
+            if fn_lower == exact_name.lower():
                 is_mod = False
-            elif fn.lower().endswith(suffix):
+            elif fn_lower.endswith(suffix) and fn_lower.startswith(mod_prefix):
                 is_mod = True
             else:
                 continue

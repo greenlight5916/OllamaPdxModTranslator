@@ -1,0 +1,93 @@
+=== OllamaTranslator Log (20260519_172613) ===
+
+[17:26:14] [CONNECT] Starting server...
+[17:26:14] [OLLAMA] Starting Ollama server...
+[17:26:17] [OLLAMA] Server ready (2 model(s) found)
+[17:26:17] [CONNECT] Loading model translategemma:12b...
+[17:26:20] [CONNECT] Running test translation...
+[17:26:22] [CONNECT] Translator Ready
+[17:26:26] [START] Translation started
+[17:26:26] Found 19 files. Starting translation...
+[17:26:28]   Translating lines 2-21/243
+[17:26:28] [GLOSSARY] Applied Stellaris glossary (50 terms)
+[17:26:44] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_buildings_l_korean.yml
+[17:26:44]   Translating lines 22-41/243
+[17:26:55]   Translating lines 42-61/243
+[17:27:05]   Translating lines 62-81/243
+[17:27:23]   Translating lines 82-101/243
+[17:27:36]   Translating lines 102-121/243
+[17:27:47] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_buildings_l_korean.yml
+[17:27:47]   Translating lines 122-141/243
+[17:27:59]   Translating lines 142-161/243
+[17:28:11]   Translating lines 162-181/243
+[17:28:25]   Translating lines 182-201/243
+[17:28:38]   Translating lines 202-221/243
+[17:28:47] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_buildings_l_korean.yml
+[17:28:47]   Translating lines 222-241/243
+[17:28:57]   Translating lines 242-243/243
+[17:29:00]   Saved: D:/steam/steamapps/workshop/content/281990/3470798768\localisation\korean\MGHG_buildings_l_korean.yml
+[17:29:00]   Translating lines 2-21/1370
+[17:29:11] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_crisis_l_korean.yml
+[17:29:11]   Translating lines 22-41/1370
+[17:29:25]   Translating lines 42-61/1370
+[17:29:31]   Translating lines 62-81/1370
+[17:29:34]   Translating lines 82-101/1370
+[17:29:37]   Translating lines 102-121/1370
+[17:29:40] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_crisis_l_korean.yml
+[17:29:40]   Translating lines 122-141/1370
+[17:29:43]   Translating lines 142-161/1370
+[17:29:46]   Translating lines 162-181/1370
+[17:29:49]   Translating lines 182-201/1370
+[17:29:52]   Translating lines 202-221/1370
+[17:29:57] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_crisis_l_korean.yml
+[17:29:57]   Translating lines 222-241/1370
+[17:30:01]   Translating lines 242-261/1370
+[17:30:04]   Translating lines 262-281/1370
+[17:30:08]   Translating lines 282-301/1370
+[17:30:11]   Translating lines 302-321/1370
+[17:30:15] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_crisis_l_korean.yml
+[17:30:15]   Translating lines 322-341/1370
+[17:30:18]   Translating lines 342-361/1370
+[17:30:22]   Translating lines 362-381/1370
+[17:30:26]   Translating lines 382-401/1370
+[17:30:32]   Translating lines 402-421/1370
+[17:30:39] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_crisis_l_korean.yml
+[17:30:39]   Translating lines 422-441/1370
+[17:30:51]   Translating lines 442-461/1370
+[17:31:00]   Translating lines 462-481/1370
+[17:31:08]   Translating lines 482-501/1370
+[17:31:19]   Translating lines 502-521/1370
+[17:31:34] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_crisis_l_korean.yml
+[17:31:34]   Translating lines 522-541/1370
+[17:31:51]   Translating lines 542-561/1370
+[17:32:05]   Translating lines 562-581/1370
+[17:32:18]   Translating lines 582-601/1370
+[17:32:25]   Translating lines 602-621/1370
+[17:32:38] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_crisis_l_korean.yml
+[17:32:38]   Translating lines 622-641/1370
+[17:32:47]   Translating lines 642-661/1370
+[17:32:57]   Translating lines 662-681/1370
+[17:33:07]   Translating lines 682-701/1370
+[17:33:20]   Translating lines 702-721/1370
+[17:33:30] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_crisis_l_korean.yml
+[17:33:30]   Translating lines 722-741/1370
+[17:33:41]   Translating lines 742-761/1370
+[17:33:49]   Translating lines 762-781/1370
+[17:34:25]   Translating lines 782-801/1370
+[17:34:46]   Translating lines 802-821/1370
+[17:34:54] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_crisis_l_korean.yml
+[17:34:54]   Translating lines 822-841/1370
+[17:35:03]   Translating lines 842-861/1370
+[17:35:13]   Translating lines 862-881/1370
+[17:35:23]   Translating lines 882-901/1370
+[17:35:34]   Translating lines 902-921/1370
+[17:35:47] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_crisis_l_korean.yml
+[17:35:47]   Translating lines 922-941/1370
+[17:35:57]   Translating lines 942-961/1370
+[17:36:07]   Translating lines 962-981/1370
+[17:36:19]   Translating lines 982-1001/1370
+[17:36:29]   Translating lines 1002-1021/1370
+[17:36:37] [STOP] Translation timed out
+[17:36:40] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_crisis_l_korean.yml
+[17:36:40] [STOPPED] Translation interrupted
+[17:36:40] [CHECKPOINT] Saved: C:\Users\green\OneDrive\Desktop\번역기\checkpoint\MGHG_crisis_l_korean.yml

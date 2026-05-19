@@ -137,3 +137,13 @@ def parse_yml(val):
         if m:
             data[m.group(1).lower()] = m.group(2)
     return data
+
+def _derive_modname(path):
+    if not path:
+        return "mod"
+    skip = {"localisation", "localization", "english", "korean", "simp_chinese", "french", "german", "spanish", "japanese", "russian", "polish", "braz_por"}
+    parts = re.split(r'[\\/]', path.rstrip("\\/"))
+    for p in reversed(parts):
+        if p.lower() not in skip:
+            return p
+    return parts[-1] if parts else "mod"

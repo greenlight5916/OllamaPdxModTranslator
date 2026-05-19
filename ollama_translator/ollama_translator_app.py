@@ -1105,10 +1105,11 @@ class OllamaTranslatorGUI(ctk.CTk, GlossaryTabMixin):
         except Exception:
             pass
 
-    def update_progress(self, current, total):
+    def update_progress(self, current, total, file_index=1, total_files=1):
         def _u():
-            self.progress_bar.set(min(current / total, 1.0) if total > 0 else 0)
-            self.progress_text.configure(text=f"{current} / {total} lines")
+            overall = ((file_index - 1) + current / total) / total_files if total > 0 else 0
+            self.progress_bar.set(min(overall, 1.0))
+            self.progress_text.configure(text=f"File {file_index}/{total_files} | {current} / {total} lines")
         self.after(0, _u)
 
     def set_status(self, status):
@@ -1265,16 +1266,8 @@ class OllamaTranslatorGUI(ctk.CTk, GlossaryTabMixin):
                            mod_folder=self._m_folder_var.get() or self.input_dir.get())
         self.after(500, self._poll_done)
 
-    _poll_count = 0
-
     def _poll_done(self):
         if self.engine.busy:
-            self._poll_count += 1
-            if self._poll_count > 1200:
-                self.log("[STOP] Translation timed out")
-                self.engine.stop()
-                self._reset_ui()
-                return
             self.after(500, self._poll_done)
         else:
             self._done()
