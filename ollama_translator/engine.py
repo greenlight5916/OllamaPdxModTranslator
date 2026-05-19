@@ -416,7 +416,7 @@ class OllamaTranslator:
             self.progress_callback(min(len(result), total), total, file_index, total_files)
             if i % (batch_size * 5) == 0:
                 self._save_checkpoint(result, output_path)
-        with open(output_path, "w", encoding=enc) as f:
+        with open(output_path, "w", encoding="utf-8-sig") as f:
             f.writelines(result)
         self.log_callback(f"  Saved: {output_path}")
 
