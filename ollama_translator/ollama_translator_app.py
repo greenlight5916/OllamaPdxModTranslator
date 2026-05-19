@@ -683,6 +683,15 @@ class OllamaTranslatorGUI(ctk.CTk, GlossaryTabMixin):
             src_lines = [l.rstrip("\n") for l in f.readlines()]
         with open(fp["out"], "r", encoding="utf-8-sig") as f:
             tgt_lines = [l.rstrip("\n") for l in f.readlines()]
+        # ── Read sidecar .warn file ──
+        warned_lines = set()
+        warn_path = fp["out"] + ".warn"
+        if os.path.isfile(warn_path):
+            try:
+                with open(warn_path, "r") as f:
+                    warned_lines = {int(line.strip()) for line in f if line.strip().isdigit()}
+            except Exception:
+                pass
         self._validate_all_data = []
         has_issues = False
         sev = None
@@ -694,6 +703,10 @@ class OllamaTranslatorGUI(ctk.CTk, GlossaryTabMixin):
             src_val = re.sub(r"^\s*[\w.]+:\s*", "", s).strip('" ')
             tgt_val = re.sub(r"^\s*[\w.]+:\s*", "", t).strip('" ')
             status = "H" if key_text.startswith("l_") else "-" if (not s.strip() or s.strip().startswith("#")) else "✓"
+            if i in warned_lines:
+                status = "⚠"
+                sev = "warn"
+                has_issues = True
             for iss in issues:
                 if iss[0] == i:
                     status = {"UNTRANSLATED": "✗!", "FOREIGN": "✗?", "DUPLICATE": "✗D", "MISMATCH": "✗X"}.get(iss[3], "✗")
@@ -731,7 +744,7 @@ class OllamaTranslatorGUI(ctk.CTk, GlossaryTabMixin):
         if not self._validate_hide_filter.get():
             data = [d for d in data if d["status"] not in ("H", "-")]
         # 정렬: ✗ 항목 우선 (✗!, ✗?, ✗D, ✗X), 그 다음 ✓
-        status_priority = {"✗!": 0, "✗?": 1, "✗D": 2, "✗X": 3, "✗": 4, "✓": 5, "H": 6, "-": 7}
+        status_priority = {"⚠": 0, "✗!": 1, "✗?": 2, "✗D": 3, "✗X": 4, "✗": 5, "✓": 6, "H": 7, "-": 8}
         data.sort(key=lambda d: (status_priority.get(d["status"].split()[0] if " " in d["status"] else d["status"], 99), d["ln"]))
         total = len(data)
         per_page = self._validate_per_page.get()
@@ -787,14 +800,14 @@ class OllamaTranslatorGUI(ctk.CTk, GlossaryTabMixin):
             tgt_entry.bind("<KeyRelease>", _on_edit)
             tgt_entry.bind("<Double-Button-1>", lambda e, idx=row["_idx"]: self._validate_open_editor(idx))
             sts = row["status"]
-            sts_color = "green" if sts == "✓" else "red" if sts.startswith("✗") else "gray"
+            sts_color = "green" if sts == "✓" else "orange" if sts == "⚠" else "red" if sts.startswith("✗") else "gray"
             ctk.CTkLabel(self._validate_frame, text=sts, width=FIXED[0], anchor="w", font=ctk.CTkFont(size=11), text_color=sts_color).grid(row=r, column=3, padx=(4,1))
             ctk.CTkLabel(self._validate_frame, text=str(row["ln"]), width=FIXED[1], anchor="w", font=ctk.CTkFont(size=11)).grid(row=r, column=4)
             chk = ctk.CTkCheckBox(self._validate_frame, text="", width=FIXED[2], command=lambda idx=row["_idx"]: self._validate_toggle(idx))
             chk.grid(row=r, column=5)
             page_chks.append(chk)
         self._validate_page_label.configure(text=f"{self._validate_page+1}/{pages}")
-        self._validate_info.configure(text=f"{total}/{len(self._validate_all_data)} lines  |  ✓ {sum(1 for d in self._validate_all_data if d['status']=='✓')}  ✗ {sum(1 for d in self._validate_all_data if d['status'].startswith('✗'))}")
+        self._validate_info.configure(text=f"{total}/{len(self._validate_all_data)} lines  |  ✓ {sum(1 for d in self._validate_all_data if d['status']=='✓')}  ⚠ {sum(1 for d in self._validate_all_data if d['status']=='⚠')}  ✗ {sum(1 for d in self._validate_all_data if d['status'].startswith('✗'))}")
 
     def _validate_prev_page(self):
         if self._validate_page > 0:

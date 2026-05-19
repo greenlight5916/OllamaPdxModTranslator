@@ -29,11 +29,12 @@ def get_enhanced_prompt(game_name, base_prompt):
     return base_prompt
 
 class OllamaTranslator:
-    def __init__(self, log_callback=None, progress_callback=None, status_callback=None, live_callback=None):
+    def __init__(self, log_callback=None, progress_callback=None, status_callback=None, live_callback=None, warn_callback=None):
         self.log_callback = log_callback or (lambda x: None)
         self.progress_callback = progress_callback or (lambda *a: None)
         self.status_callback = status_callback or (lambda x: None)
         self.live_callback = live_callback
+        self.warn_callback = warn_callback or (lambda *a: None)
         self.base_url = "http://localhost:11434"
         self.stop_event = threading.Event()
         self.busy = False
@@ -53,6 +54,7 @@ class OllamaTranslator:
         self.debug_mode = False
         self.glossary_limit = 500
         self._checkpoint_restored = False
+        self._file_warnings = {}
 
     def set_base_url(self, url):
         self.base_url = url.rstrip("/")
@@ -181,7 +183,7 @@ class OllamaTranslator:
         "Brazilian Portuguese":"braz_por",
     }
 
-    def _translate_batch(self, lines, source_lang, target_lang, model, temperature, max_tokens, num_ctx=4096, game="None", retry_count=0, timeout=90, mod_folder=""):
+    def _translate_batch(self, lines, source_lang, target_lang, model, temperature, max_tokens, num_ctx=4096, game="None", retry_count=0, timeout=90, mod_folder="", output_path="", _file_offset=0):
         header_pat = re.compile(r'^l_[a-z_]+:\s*$')
         comment_indices = {i for i, l in enumerate(lines) if not l.strip() or l.strip().startswith('#') or header_pat.match(l)}
         if comment_indices:
@@ -190,7 +192,7 @@ class OllamaTranslator:
             actual_lines = [l for i, l in enumerate(lines) if i not in comment_indices]
             if self.debug_mode:
                 self.log_callback(f"[DEBUG] batch:{len(lines)}lines filter->{len(actual_lines)}content")
-            translated_actual = self._translate_batch(actual_lines, source_lang, target_lang, model, temperature, max_tokens, num_ctx, game, 0, timeout)
+            translated_actual = self._translate_batch(actual_lines, source_lang, target_lang, model, temperature, max_tokens, num_ctx, game, 0, timeout, mod_folder, output_path, _file_offset)
             if self.stop_event.is_set():
                 return lines
             merged = []
@@ -292,16 +294,16 @@ class OllamaTranslator:
                 self.log_callback(f"[SPLIT] {result} - splitting batch of {len(lines)} lines")
                 mid = len(lines) // 2
                 t = min(temperature + 0.05, 1.0)
-                first = self._translate_batch(lines[:mid], source_lang, target_lang, model, t, max_tokens, num_ctx, game, timeout=timeout)
+                first = self._translate_batch(lines[:mid], source_lang, target_lang, model, t, max_tokens, num_ctx, game, timeout=timeout, output_path=output_path, _file_offset=_file_offset)
                 if self.stop_event.is_set():
                     return lines
-                second = self._translate_batch(lines[mid:], source_lang, target_lang, model, t, max_tokens, num_ctx, game, timeout=timeout)
+                second = self._translate_batch(lines[mid:], source_lang, target_lang, model, t, max_tokens, num_ctx, game, timeout=timeout, output_path=output_path, _file_offset=_file_offset + mid)
                 return first + second
             else:
                 if retry_count < self.max_retries:
                     self.log_callback(f"[RETRY {retry_count+1}/{self.max_retries}] {result} - retrying single line")
                     t = min(temperature + 0.1, 1.0)
-                    return self._translate_batch(lines, source_lang, target_lang, model, t, max_tokens, num_ctx, game, retry_count + 1, timeout)
+                    return self._translate_batch(lines, source_lang, target_lang, model, t, max_tokens, num_ctx, game, retry_count + 1, timeout, mod_folder, output_path, _file_offset)
                 self.log_callback(f"[FAIL] {result} - returning original after {self.max_retries} retries")
                 if self.live_callback:
                     self.live_callback(lines, lines)
@@ -323,6 +325,9 @@ class OllamaTranslator:
             self.log_callback(f"[WARN] LLM returned {len(translated_values)} markers (expected {len(send_data)}), keeping original")
             for i, tv in enumerate(translated_values):
                 self.log_callback(f"[WARN]   out[{i}]: {repr(tv[:100])}")
+            if output_path:
+                for k in range(len(lines)):
+                    self._file_warnings.setdefault(output_path, set()).add(_file_offset + k)
             return lines
 
         reconstructed = list(lines)
@@ -411,7 +416,7 @@ class OllamaTranslator:
                 return
             batch = content[i:i + batch_size]
             self.log_callback(f"  Translating lines {len(result)+1}-{len(result)+len(batch)}/{total}")
-            translated = self._translate_batch(batch, source_lang, target_lang, model, temperature, max_tokens, num_ctx, game, timeout=timeout, mod_folder=mod_folder)
+            translated = self._translate_batch(batch, source_lang, target_lang, model, temperature, max_tokens, num_ctx, game, timeout=timeout, mod_folder=mod_folder, output_path=output_path, _file_offset=1 + i)
             result.extend(translated)
             self.progress_callback(min(len(result), total), total, file_index, total_files)
             if i % (batch_size * 5) == 0:
@@ -419,6 +424,16 @@ class OllamaTranslator:
         with open(output_path, "w", encoding="utf-8-sig") as f:
             f.writelines(result)
         self.log_callback(f"  Saved: {output_path}")
+        # ── Write sidecar .warn file for marker-mismatch failures ──
+        warned = self._file_warnings.get(output_path)
+        if warned:
+            warn_path = output_path + ".warn"
+            try:
+                with open(warn_path, "w", encoding="utf-8") as f:
+                    for ln in sorted(warned):
+                        f.write(f"{ln}\n")
+            except Exception:
+                pass
 
     def _worker(self, input_dir, output_dir, source_lang, target_lang, model, temperature, max_tokens, batch_size, num_ctx=4096, game="None", timeout=90, mod_folder=""):
         source_code = self._LANG_CODE.get(source_lang, source_lang.lower())
