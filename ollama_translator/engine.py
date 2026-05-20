@@ -183,6 +183,24 @@ class OllamaTranslator:
         "Brazilian Portuguese":"braz_por",
     }
 
+    @staticmethod
+    def _normalize_text(text):
+        replacements = {
+            '\u201c': '"', '\u201d': '"', '\u201e': '"', '\u201f': '"',
+            '\u2018': "'", '\u2019': "'", '\u201a': "'", '\u201b': "'",
+            '\u2014': '-', '\u2013': '-',
+            '\u2026': '...',
+            '\u00b7': '.',
+            '\uff0c': ',', '\uff1a': ':',
+            '\u3001': ',',
+            '\u00e9': 'e',
+            '\u00a0': ' ',
+            '\u0437': 'z', '\u043e': 'o', '\u0434': 'd', '\u0435': 'e', '\u0448': 'sh',
+        }
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+        return text
+
     def _translate_batch(self, lines, source_lang, target_lang, model, temperature, max_tokens, num_ctx=4096, game="None", retry_count=0, timeout=90, mod_folder="", output_path="", _file_offset=0):
         header_pat = re.compile(r'^l_[a-z_]+:\s*$')
         comment_indices = {i for i, l in enumerate(lines) if not l.strip() or l.strip().startswith('#') or header_pat.match(l)}
@@ -360,6 +378,7 @@ class OllamaTranslator:
                             val = raw
                     for ph, orig in phs:
                         val = val.replace(ph, orig)
+                    val = self._normalize_text(val)
                     val = val.replace('\n', '\\n')
                     lt = f'{lt_inline} ' if lt_inline else ' '
                     reconstructed[i] = f'{send_ws}{send_key}:{lt}"{val}"\n'
