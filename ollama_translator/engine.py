@@ -192,10 +192,23 @@ class OllamaTranslator:
             '\u2026': '...',
             '\u00b7': '.',
             '\uff0c': ',', '\uff1a': ':',
-            '\u3001': ',',
-            '\u00e9': 'e',
+            '\u3001': ',', '\u3002': '.',
+            '\u30fb': '.',
+            '\u00e9': 'e', '\u00e8': 'e', '\u00ea': 'e', '\u00eb': 'e',
+            '\u00e0': 'a', '\u00e1': 'a', '\u00e2': 'a', '\u00e3': 'a', '\u00e4': 'a', '\u00e5': 'a',
+            '\u00ec': 'i', '\u00ed': 'i', '\u00ee': 'i', '\u00ef': 'i',
+            '\u00f2': 'o', '\u00f3': 'o', '\u00f4': 'o', '\u00f5': 'o', '\u00f6': 'o',
+            '\u00f9': 'u', '\u00fa': 'u', '\u00fb': 'u', '\u00fc': 'u',
+            '\u00f1': 'n',
             '\u00a0': ' ',
-            '\u0437': 'z', '\u043e': 'o', '\u0434': 'd', '\u0435': 'e', '\u0448': 'sh',
+            '\u0430': 'a', '\u0431': 'b', '\u0432': 'v', '\u0433': 'g',
+            '\u0434': 'd', '\u0435': 'e', '\u0436': 'zh', '\u0437': 'z',
+            '\u0438': 'i', '\u0439': 'i', '\u043a': 'k', '\u043b': 'l',
+            '\u043c': 'm', '\u043d': 'n', '\u043e': 'o', '\u043f': 'p',
+            '\u0440': 'r', '\u0441': 'c', '\u0442': 't', '\u0443': 'u',
+            '\u0444': 'f', '\u0445': 'kh', '\u0446': 'ts', '\u0447': 'ch',
+            '\u0448': 'sh', '\u0449': 'shch', '\u044b': 'y', '\u044d': 'e',
+            '\u044e': 'yu', '\u044f': 'ya',
         }
         for old, new in replacements.items():
             text = text.replace(old, new)
@@ -379,6 +392,7 @@ class OllamaTranslator:
                     for ph, orig in phs:
                         val = val.replace(ph, orig)
                     val = self._normalize_text(val)
+                    val = val.replace('"', '\\"')
                     val = val.replace('\n', '\\n')
                     lt = f'{lt_inline} ' if lt_inline else ' '
                     reconstructed[i] = f'{send_ws}{send_key}:{lt}"{val}"\n'
