@@ -191,7 +191,7 @@ class OllamaTranslator:
             '\u2014': '-', '\u2013': '-',
             '\u2026': '...',
             '\u00b7': '.',
-            '\uff0c': ',', '\uff1a': ':',
+            '\uff01': '!', '\uff0c': ',', '\uff1a': ':',
             '\u3001': ',', '\u3002': '.',
             '\u30fb': '.',
             '\u00e9': 'e', '\u00e8': 'e', '\u00ea': 'e', '\u00eb': 'e',
@@ -392,7 +392,7 @@ class OllamaTranslator:
                     for ph, orig in phs:
                         val = val.replace(ph, orig)
                     val = self._normalize_text(val)
-                    val = val.replace('"', '\\"')
+                    val = val.replace('"', "'")
                     val = val.replace('\n', '\\n')
                     lt = f'{lt_inline} ' if lt_inline else ' '
                     reconstructed[i] = f'{send_ws}{send_key}:{lt}"{val}"\n'
